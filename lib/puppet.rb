@@ -265,5 +265,3 @@ require 'puppet/data_binding'
 require 'puppet/util/storage'
 require 'puppet/status'
 require 'puppet/file_bucket/file'
-
-require 'puppet/extras/gemspec'
