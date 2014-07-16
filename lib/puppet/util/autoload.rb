@@ -91,6 +91,8 @@ class Puppet::Util::Autoload
     end
 
     def files_to_load(path)
+      # loadall is called when new module gets registered, reset dir cache in this case
+      @search_directories[nil] = nil
       search_directories(nil).map {|dir| files_in_dir(dir, path) }.flatten.uniq
     end
 
