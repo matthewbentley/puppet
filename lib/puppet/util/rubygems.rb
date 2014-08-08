@@ -1,12 +1,5 @@
 require 'puppet/util'
 
-require 'rubygems/specification'
-class Gem::Specification
-  def to_ary
-    nil
-  end
-end
-
 module Puppet::Util::RubyGems
 
   # Base/factory class for rubygems source. These classes introspec into
