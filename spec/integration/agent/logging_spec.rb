@@ -88,13 +88,17 @@ describe 'agent logging' do
     else
 
       it "when evoked with #{argv}, logs to #{expected[:loggers].inspect} at level #{expected[:level]}" do
+        if Facter.value(:kernelmajversion).to_f < 6.0
+          pending("requires win32-eventlog gem upgrade to 0.6.2 on Windows 2003")
+        end
+
         # This logger is created by the Puppet::Settings object which creates and
         # applies a catalog to ensure that configuration files and users are in
         # place.
         #
         # It's not something we are specifically testing here since it occurs
         # regardless of user flags.
-        Puppet::Util::Log.expects(:newdestination).with(instance_of(Puppet::Transaction::Report)).once
+        Puppet::Util::Log.expects(:newdestination).with(instance_of(Puppet::Transaction::Report)).at_least_once
         expected[:loggers].each do |logclass|
           Puppet::Util::Log.expects(:newdestination).with(logclass).at_least_once
         end

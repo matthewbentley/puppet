@@ -25,7 +25,7 @@ class Puppet::Network::HTTP::API::V1
   }
 
   def self.routes
-    [Puppet::Network::HTTP::Route.path(/.*/).any(new)]
+    Puppet::Network::HTTP::Route.path(/.*/).any(new)
   end
 
   # handle an HTTP request
@@ -58,12 +58,19 @@ class Puppet::Network::HTTP::API::V1
   def uri2indirection(http_method, uri, params)
     environment, indirection, key = uri.split("/", 4)[1..-1] # the first field is always nil because of the leading slash
 
-    raise ArgumentError, "The environment must be purely alphanumeric, not '#{environment}'" unless environment =~ /^\w+$/
+    raise ArgumentError, "The environment must be purely alphanumeric, not '#{environment}'" unless Puppet::Node::Environment.valid_name?(environment)
     raise ArgumentError, "The indirection name must be purely alphanumeric, not '#{indirection}'" unless indirection =~ /^\w+$/
 
     method = indirection_method(http_method, indirection)
 
-    params[:environment] = Puppet::Node::Environment.new(environment)
+    configured_environment = Puppet.lookup(:environments).get(environment)
+    if configured_environment.nil?
+      raise Puppet::Network::HTTP::Error::HTTPNotFoundError.new("Could not find environment '#{environment}'", Puppet::Network::HTTP::Issues::ENVIRONMENT_NOT_FOUND)
+    else
+      configured_environment = configured_environment.override_from_commandline(Puppet.settings)
+      params[:environment] = configured_environment
+    end
+
     params.delete(:bucket_path)
 
     raise ArgumentError, "No request key specified in #{uri}" if key == "" or key.nil?
@@ -103,12 +110,12 @@ class Puppet::Network::HTTP::API::V1
 
     rendered_result = result
     if result.respond_to?(:render)
-      Puppet::Util::Profiler.profile("Rendered result in #{format}") do
+      Puppet::Util::Profiler.profile("Rendered result in #{format}", [:http, :v1_render, format]) do
         rendered_result = result.render(format)
       end
     end
 
-    Puppet::Util::Profiler.profile("Sent response") do
+    Puppet::Util::Profiler.profile("Sent response", [:http, :v1_response]) do
       response.respond_with(200, format, rendered_result)
     end
   end

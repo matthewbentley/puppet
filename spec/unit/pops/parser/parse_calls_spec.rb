@@ -14,8 +14,12 @@ describe "egrammar parsing function calls" do
         dump(parse("foo()")).should == "(invoke foo)"
       end
 
-      it "foo bar" do
-        dump(parse("foo bar")).should == "(invoke foo bar)"
+      it "notice bar" do
+        dump(parse("notice bar")).should == "(invoke notice bar)"
+      end
+
+      it "notice(bar)" do
+        dump(parse("notice bar")).should == "(invoke notice bar)"
       end
 
       it "foo(bar)" do
@@ -30,8 +34,8 @@ describe "egrammar parsing function calls" do
         dump(parse("foo(bar,fum,)")).should == "(invoke foo bar fum)"
       end
 
-      it "foo fqdn_rand(30)" do
-        dump(parse("foo fqdn_rand(30)")).should == '(invoke foo (call fqdn_rand 30))'
+      it "notice fqdn_rand(30)" do
+        dump(parse("notice fqdn_rand(30)")).should == '(invoke notice (call fqdn_rand 30))'
       end
     end
 
@@ -40,8 +44,8 @@ describe "egrammar parsing function calls" do
         dump(parse("if true {foo()}")).should == "(if true\n  (then (invoke foo)))"
       end
 
-      it "if true { foo bar}" do
-        dump(parse("if true {foo bar}")).should == "(if true\n  (then (invoke foo bar)))"
+      it "if true { notice bar}" do
+        dump(parse("if true {notice bar}")).should == "(if true\n  (then (invoke notice bar)))"
       end
     end
   end
@@ -55,14 +59,9 @@ describe "egrammar parsing function calls" do
       dump(parse("$a = foo()")).should == "(= $a (call foo))"
     end
 
-    #    # For regular grammar where a bare word can not be a "statement"
-    #    it "$a = foo bar # illegal, must have parentheses" do
-    #      expect { dump(parse("$a = foo bar"))}.to raise_error(Puppet::ParseError)
-    #    end
-
     # For egrammar where a bare word can be a "statement"
     it "$a = foo bar # illegal, must have parentheses" do
-      dump(parse("$a = foo bar")).should == "(block (= $a foo) bar)"
+      dump(parse("$a = foo bar")).should == "(block\n  (= $a foo)\n  bar\n)"
     end
 
     context "in nested scopes" do
@@ -90,8 +89,31 @@ describe "egrammar parsing function calls" do
     end
 
     it "$a.foo |$x|{ }" do
-      dump(parse("$a.foo |$x|{ $b = $x}")).should ==
-      "(call-method (. $a foo) (lambda (parameters x) (block (= $b $x))))"
+      dump(parse("$a.foo |$x|{ $b = $x}")).should == [
+        "(call-method (. $a foo) (lambda (parameters x) (block",
+        "  (= $b $x)",
+        ")))"
+        ].join("\n")
+    end
+  end
+
+  context "When parsing an illegal argument list" do
+    it "raises an error if argument list is not for a call" do
+      expect do
+        parse("$a  = 10, 3")
+      end.to raise_error(/illegal comma/)
+    end
+
+    it "raises an error if argument list is for a potential call not allowed without parentheses" do
+      expect do
+        parse("foo 10, 3")
+      end.to raise_error(/attempt to pass argument list to the function 'foo' which cannot be called without parentheses/)
+    end
+
+    it "does no raise an error for an argument list to an allowed call" do
+      expect do
+        parse("notice 10, 3")
+      end.to_not raise_error()
     end
   end
 end

@@ -15,13 +15,15 @@ Puppet::Type.type(:ssh_authorized_key).provide(
     :fields   => %w{options type key name},
     :optional => %w{options},
     :rts => /^\s+/,
-    :match    => /^(?:(.+) )?(ssh-dss|ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521) ([^ ]+) ?(.*)$/,
+    :match    => Puppet::Type.type(:ssh_authorized_key).keyline_regex,
     :post_parse => proc { |h|
       h[:name] = "" if h[:name] == :absent
       h[:options] ||= [:absent]
       h[:options] = Puppet::Type::Ssh_authorized_key::ProviderParsed.parse_options(h[:options]) if h[:options].is_a? String
     },
     :pre_gen => proc { |h|
+      # if this name was generated, don't write it back to disk
+      h[:name] = "" if h[:unnamed]
       h[:options] = [] if h[:options].include?(:absent)
       h[:options] = h[:options].join(',')
     }
@@ -74,7 +76,7 @@ Puppet::Type.type(:ssh_authorized_key).provide(
     while !scanner.eos?
       scanner.skip(/[ \t]*/)
       # scan a long option
-      if out = scanner.scan(/[-a-z0-9A-Z_]+=\".*?\"/) or out = scanner.scan(/[-a-z0-9A-Z_]+/)
+      if out = scanner.scan(/[-a-z0-9A-Z_]+=\".*?[^\\]\"/) or out = scanner.scan(/[-a-z0-9A-Z_]+/)
         result << out
       else
         # found an unscannable token, let's abort
@@ -84,6 +86,20 @@ Puppet::Type.type(:ssh_authorized_key).provide(
       scanner.skip(/[ \t]*,[ \t]*/)
     end
     result
+  end
+
+  def self.prefetch_hook(records)
+    name_index = 0
+    records.each do |record|
+      if record[:record_type] == :parsed && record[:name].empty?
+        record[:unnamed] = true
+        # Generate a unique ID for unnamed keys, in case they need purging.
+        # If you change this, you have to keep
+        # Puppet::Type::User#unknown_keys_in_file in sync! (PUP-3357)
+        record[:name] = "#{record[:target]}:unnamed-#{ name_index += 1 }"
+        Puppet.debug("generating name for on-disk ssh_authorized_key #{record[:key]}: #{record[:name]}")
+      end
+    end
   end
 end
 

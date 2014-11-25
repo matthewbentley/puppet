@@ -70,7 +70,7 @@ class Puppet::FileServing::Fileset
 
   def ignore=(values)
     values = [values] unless values.is_a?(Array)
-    @ignore = values
+    @ignore = values.collect(&:to_s)
   end
 
   def links=(links)
@@ -88,7 +88,7 @@ class Puppet::FileServing::Fileset
       begin
         send(method, value)
       rescue NoMethodError
-        raise ArgumentError, "Invalid option '#{option}'"
+        raise ArgumentError, "Invalid option '#{option}'", $!.backtrace
       end
     end
   end

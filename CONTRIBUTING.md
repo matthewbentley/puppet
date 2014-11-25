@@ -22,9 +22,8 @@ top of things.
   * This is usually the master branch.
   * Only target release branches if you are certain your fix must be on that
     branch.
-  * To quickly create a topic branch based on master; `git branch
-    fix/master/my_contribution master` then checkout the new branch with `git
-    checkout fix/master/my_contribution`.  Please avoid working directly on the
+  * To quickly create a topic branch based on master; `git checkout -b
+    fix/master/my_contribution master`. Please avoid working directly on the
     `master` branch.
 * Make commits of logical units.
 * Check for unnecessary whitespace with `git diff --check` before committing.
@@ -76,6 +75,11 @@ a ticket number.
 * Submit a pull request to the repository in the puppetlabs organization.
 * Update your Jira ticket to mark that you have submitted code and are ready for it to be reviewed (Status: Ready for Merge).
   * Include a link to the pull request in the ticket.
+* The core team looks at Pull Requests on a regular basis in a weekly triage
+  meeting that we hold in a public Google Hangout. The hangout is announced in
+  the weekly status updates that are sent to the puppet-dev list.
+* After feedback has been given we expect responses within two weeks. After two
+  weeks will may close the pull request if it isn't showing any activity.
 
 # Additional Resources
 

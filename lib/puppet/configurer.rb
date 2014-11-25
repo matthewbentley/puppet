@@ -8,9 +8,9 @@ require 'securerandom'
 class Puppet::Configurer
   require 'puppet/configurer/fact_handler'
   require 'puppet/configurer/plugin_handler'
+  require 'puppet/configurer/downloader_factory'
 
   include Puppet::Configurer::FactHandler
-  include Puppet::Configurer::PluginHandler
 
   # For benchmarking
   include Puppet::Util
@@ -20,13 +20,6 @@ class Puppet::Configurer
   # Provide more helpful strings to the logging that the Agent does
   def self.to_s
     "Puppet configuration client"
-  end
-
-  class << self
-    # Puppet agent should only have one instance running, and we need a
-    # way to retrieve it.
-    attr_accessor :instance
-    include Puppet::Util
   end
 
   def execute_postrun_command
@@ -47,19 +40,18 @@ class Puppet::Configurer
       Puppet::FileSystem.unlink(Puppet[:statefile])
       retry
     rescue => detail
-      raise Puppet::Error.new("Cannot remove #{Puppet[:statefile]}: #{detail}")
+      raise Puppet::Error.new("Cannot remove #{Puppet[:statefile]}: #{detail}", detail)
     end
   end
 
-  # Just so we can specify that we are "the" instance.
-  def initialize
+  def initialize(factory = Puppet::Configurer::DownloaderFactory.new)
     Puppet.settings.use(:main, :ssl, :agent)
 
-    self.class.instance = self
     @running = false
     @splayed = false
     @environment = Puppet[:environment]
     @transaction_uuid = SecureRandom.uuid
+    @handler = Puppet::Configurer::PluginHandler.new(factory)
   end
 
   # Get the remote catalog, yo.  Returns nil if no catalog can be found.
@@ -90,7 +82,10 @@ class Puppet::Configurer
   end
 
   def get_facts(options)
-    download_plugins if options[:pluginsync]
+    if options[:pluginsync]
+      remote_environment_for_plugins = Puppet::Node::Environment.remote(@environment)
+      download_plugins(remote_environment_for_plugins)
+    end
 
     if Puppet::Resource::Catalog.indirection.terminus_class == :rest
       # This is a bit complicated.  We need the serialized and escaped facts,
@@ -118,8 +113,6 @@ class Puppet::Configurer
   def apply_catalog(catalog, options)
     report = options[:report]
     report.configuration_version = catalog.version
-    report.transaction_uuid = @transaction_uuid
-    report.environment = @environment
 
     benchmark(:notice, "Finished catalog run") do
       catalog.apply(options)
@@ -129,15 +122,26 @@ class Puppet::Configurer
     report
   end
 
-  def get_transaction_uuid
-    { :transaction_uuid => @transaction_uuid }
-  end
-
   # The code that actually runs the catalog.
   # This just passes any options on to the catalog,
   # which accepts :tags and :ignoreschedules.
   def run(options = {})
-    options[:report] ||= Puppet::Transaction::Report.new("apply")
+    pool = Puppet::Network::HTTP::Pool.new(Puppet[:http_keepalive_timeout])
+    begin
+      Puppet.override(:http_pool => pool) do
+        run_internal(options)
+      end
+    ensure
+      pool.close
+    end
+  end
+
+  def run_internal(options)
+    # We create the report pre-populated with default settings for
+    # environment and transaction_uuid very early, this is to ensure
+    # they are sent regardless of any catalog compilation failures or
+    # exceptions.
+    options[:report] ||= Puppet::Transaction::Report.new("apply", nil, @environment, @transaction_uuid)
     report = options[:report]
     init_storage
 
@@ -152,10 +156,21 @@ class Puppet::Configurer
       unless options[:catalog]
         begin
           if node = Puppet::Node.indirection.find(Puppet[:node_name_value],
-              :environment => @environment, :ignore_cache => true)
+              :environment => Puppet::Node::Environment.remote(@environment),
+              :ignore_cache => true,
+              :transaction_uuid => @transaction_uuid,
+              :fail_on_404 => true)
+
+            # If we have deserialized a node from a rest call, we want to set
+            # an environment instance as a simple 'remote' environment reference.
+            if !node.has_environment_instance? && node.environment_name
+              node.environment = Puppet::Node::Environment.remote(node.environment_name)
+            end
+
             if node.environment.to_s != @environment
               Puppet.warning "Local environment: \"#{@environment}\" doesn't match server specified node environment \"#{node.environment}\", switching agent to \"#{node.environment}\"."
               @environment = node.environment.to_s
+              report.environment = @environment
               query_options = nil
             end
           end
@@ -167,10 +182,23 @@ class Puppet::Configurer
         end
       end
 
+      current_environment = Puppet.lookup(:current_environment)
+      local_node_environment =
+      if current_environment.name == @environment.intern
+        current_environment
+      else
+        Puppet::Node::Environment.create(@environment,
+                                         current_environment.modulepath,
+                                         current_environment.manifest,
+                                         current_environment.config_version)
+      end
+      Puppet.push_context({:current_environment => local_node_environment}, "Local node environment for configurer transaction")
+
       query_options = get_facts(options) unless query_options
 
-      # add the transaction uuid to the catalog query options hash
-      query_options.merge! get_transaction_uuid if query_options
+      # get_facts returns nil during puppet apply
+      query_options ||= {}
+      query_options[:transaction_uuid] = @transaction_uuid
 
       unless catalog = prepare_and_retrieve_catalog(options, query_options)
         return nil
@@ -187,6 +215,7 @@ class Puppet::Configurer
         end
         Puppet.warning "Local environment: \"#{@environment}\" doesn't match server specified environment \"#{catalog.environment}\", restarting agent run with environment \"#{catalog.environment}\""
         @environment = catalog.environment
+        report.environment = @environment
         return nil unless catalog = prepare_and_retrieve_catalog(options, query_options)
         tries += 1
       end
@@ -208,12 +237,14 @@ class Puppet::Configurer
 
     Puppet::Util::Log.close(report)
     send_report(report)
+    Puppet.pop_context
   end
+  private :run_internal
 
   def send_report(report)
     puts report.summary if Puppet[:summarize]
     save_last_run_summary(report)
-    Puppet::Transaction::Report.indirection.save(report, nil, :environment => @environment) if Puppet[:report]
+    Puppet::Transaction::Report.indirection.save(report, nil, :environment => Puppet::Node::Environment.remote(@environment)) if Puppet[:report]
   rescue => detail
     Puppet.log_exception(detail, "Could not send report: #{detail}")
   end
@@ -244,7 +275,8 @@ class Puppet::Configurer
   def retrieve_catalog_from_cache(query_options)
     result = nil
     @duration = thinmark do
-      result = Puppet::Resource::Catalog.indirection.find(Puppet[:node_name_value], query_options.merge(:ignore_terminus => true, :environment => @environment))
+      result = Puppet::Resource::Catalog.indirection.find(Puppet[:node_name_value],
+        query_options.merge(:ignore_terminus => true, :environment => Puppet::Node::Environment.remote(@environment)))
     end
     Puppet.notice "Using cached catalog"
     result
@@ -256,7 +288,8 @@ class Puppet::Configurer
   def retrieve_new_catalog(query_options)
     result = nil
     @duration = thinmark do
-      result = Puppet::Resource::Catalog.indirection.find(Puppet[:node_name_value], query_options.merge(:ignore_cache => true, :environment => @environment))
+      result = Puppet::Resource::Catalog.indirection.find(Puppet[:node_name_value],
+        query_options.merge(:ignore_cache => true, :environment => Puppet::Node::Environment.remote(@environment), :fail_on_404 => true))
     end
     result
   rescue SystemExit,NoMemoryError
@@ -264,5 +297,9 @@ class Puppet::Configurer
   rescue Exception => detail
     Puppet.log_exception(detail, "Could not retrieve catalog from remote server: #{detail}")
     return nil
+  end
+
+  def download_plugins(remote_environment_for_plugins)
+    @handler.download_plugins(remote_environment_for_plugins)
   end
 end

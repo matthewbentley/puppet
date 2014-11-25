@@ -16,7 +16,7 @@ class Puppet::Parser::AST::PopsBridge
 
     def initialize args
       super
-      @@evaluator ||= Puppet::Pops::Parser::EvaluatingParser::Transitional.new()
+      @@evaluator ||= Puppet::Pops::Parser::EvaluatingParser.new()
     end
 
     def to_s
@@ -68,7 +68,7 @@ class Puppet::Parser::AST::PopsBridge
       @program_model = program_model
       @context = context
       @ast_transformer ||= Puppet::Pops::Model::AstTransformer.new(@context[:file])
-      @@evaluator ||= Puppet::Pops::Parser::EvaluatingParser::Transitional.new()
+      @@evaluator ||= Puppet::Pops::Parser::EvaluatingParser.new()
     end
 
     # This is the 3x API, the 3x AST searches through all code to find the instructions that can be instantiated.
@@ -85,9 +85,10 @@ class Puppet::Parser::AST::PopsBridge
         when Puppet::Pops::Model::NodeDefinition
           instantiate_NodeDefinition(d, modname)
         else
-          raise Puppet::ParseError("Internal Error: Unknown type of definition - got '#{d.class}'")
+          raise Puppet::ParseError, "Internal Error: Unknown type of definition - got '#{d.class}'"
         end
-      end.flatten() # flatten since node definition may have returned an array
+      end.flatten().compact() # flatten since node definition may have returned an array
+                              # Compact since functions are not understood by compiler
     end
 
     def evaluate(scope)
@@ -105,20 +106,54 @@ class Puppet::Parser::AST::PopsBridge
 
     def instantiate_Parameter(o)
       # 3x needs parameters as an array of `[name]` or `[name, value_expr]`
-      # One problem is that the parameter evaluation takes place in the wrong context in 3x (the caller's and
-      # can thus reference all sorts of information. Here the value expression is wrapped in an AST Bridge to a Pops
-      # expression since the Pops side can not control the evaluation
       if o.value
-        [ o.name, Expression.new(:value => o.value) ]
+        [o.name, Expression.new(:value => o.value)]
       else
-        [ o.name ]
+        [o.name]
       end
+    end
+
+    def create_type_map(definition)
+      result = {}
+      # No need to do anything if there are no parameters
+      return result unless definition.parameters.size > 0
+
+      # No need to do anything if there are no typed parameters
+      typed_parameters = definition.parameters.select {|p| p.type_expr }
+      return result if typed_parameters.empty?
+
+      # If there are typed parameters, they need to be evaluated to produce the corresponding type
+      # instances. This evaluation requires a scope. A scope is not available when doing deserialization
+      # (there is also no initialized evaluator). When running apply and test however, the environment is
+      # reused and we may reenter without a scope (which is fine). A debug message is then output in case
+      # there is the need to track down the odd corner case. See {#obtain_scope}.
+      #
+      if scope = obtain_scope
+        typed_parameters.each do |p|
+          result[p.name] =  @@evaluator.evaluate(scope, p.type_expr)
+        end
+      end
+      result
+    end
+
+    # Obtains the scope or issues a warning if :global_scope is not bound
+    def obtain_scope
+      scope = Puppet.lookup(:global_scope) do
+        # This occurs when testing and when applying a catalog (there is no scope available then), and
+        # when running tests that run a partial setup.
+        # This is bad if the logic is trying to compile, but a warning can not be issues since it is a normal
+        # use case that there is no scope when requesting the type in order to just get the parameters.
+        Puppet.debug("Instantiating Resource with type checked parameters - scope is missing, skipping type checking.")
+        nil
+      end
+      scope
     end
 
     # Produces a hash with data for Definition and HostClass
     def args_from_definition(o, modname)
       args = {
        :arguments => o.parameters.collect {|p| instantiate_Parameter(p) },
+       :argument_types => create_type_map(o),
        :module_name => modname
       }
       unless is_nop?(o.body)
@@ -129,7 +164,7 @@ class Puppet::Parser::AST::PopsBridge
 
     def instantiate_HostClassDefinition(o, modname)
       args = args_from_definition(o, modname)
-      args[:parent] = o.parent_class
+      args[:parent] = absolute_reference(o.parent_class)
       Puppet::Resource::Type.new(:hostclass, o.name, @context.merge(args))
     end
 
@@ -155,6 +190,39 @@ class Puppet::Parser::AST::PopsBridge
       end
     end
 
+    # Propagates a found Function to the appropriate loader.
+    # This is for 4x future-evaluator/loader
+    #
+    def instantiate_FunctionDefinition(function_definition, modname)
+      loaders = (Puppet.lookup(:loaders) { nil })
+      unless loaders
+        raise Puppet::ParseError, "Internal Error: Puppet Context ':loaders' missing - cannot define any functions"
+      end
+      loader =
+      if modname.nil? || modname == ""
+        # TODO : Later when functions can be private, a decision is needed regarding what that means.
+        #        A private environment loader could be used for logic outside of modules, then only that logic
+        #        would see the function.
+        #
+        # Use the private loader, this function may see the environment's dependencies (currently, all modules)
+        loaders.private_environment_loader()
+      else
+        # TODO : Later check if function is private, and then add it to
+        #        private_loader_for_module
+        #
+        loaders.public_loader_for_module(modname)
+      end
+      unless loader
+        raise Puppet::ParseError, "Internal Error: did not find public loader for module: '#{modname}'"
+      end
+
+      # Instantiate Function, and store it in the environment loader
+      typed_name, f = Puppet::Pops::Loader::PuppetFunctionInstantiator.create_from_model(function_definition, loader)
+      loader.set_entry(typed_name, f, Puppet::Pops::Adapters::SourcePosAdapter.adapt(function_definition).to_uri)
+
+      nil # do not want the function to inadvertently leak into 3x
+    end
+
     def code()
       Expression.new(:value => @value)
     end
@@ -163,6 +231,12 @@ class Puppet::Parser::AST::PopsBridge
       @ast_transformer.is_nop?(o)
     end
 
+    def absolute_reference(ref)
+      if ref.nil? || ref.empty? || ref.start_with?('::')
+        ref
+      else
+        "::#{ref}"
+      end
+    end
   end
-
 end

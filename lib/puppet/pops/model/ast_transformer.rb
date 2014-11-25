@@ -175,6 +175,14 @@ class Puppet::Pops::Model::AstTransformer
     ast o, AST::Collection, args
   end
 
+  def transform_EppExpression(o)
+    # TODO: Not supported in 3x TODO_EPP
+    parameters = o.parameters.collect {|p| transform(p) }
+    args = { :parameters => parameters }
+    args[:children] = transform(o.body) unless is_nop?(o.body)
+    Puppet::Parser::AST::Epp.new(merge_location(args, o))
+  end
+
   def transform_ExportedQuery(o)
     if is_nop?(o.expr)
       result = :exported
@@ -428,6 +436,12 @@ class Puppet::Pops::Model::AstTransformer
     Puppet::Parser::AST::Hostclass.new(o.name, merge_location(args, o))
   end
 
+  def transform_HeredocExpression(o)
+    # TODO_HEREDOC Not supported in 3x
+    args = {:syntax=> o.syntax(), :expr => transform(o.text_expr()) }
+    Puppet::Parser::AST::Heredoc.new(merge_location(args, o))
+  end
+
   def transform_NodeDefinition(o)
     # o.host_matches are expressions, and 3.1 AST requires special object AST::HostName
     # where a HostName is one of NAME, STRING, DEFAULT or Regexp - all of these are strings except regexp
@@ -475,6 +489,16 @@ class Puppet::Pops::Model::AstTransformer
     Puppet::Parser::AST::Relationship.new(transform(o.left_expr), transform(o.right_expr), o.operator.to_s, merge_location({}, o))
   end
 
+  def transform_RenderStringExpression(o)
+    # TODO_EPP Not supported in 3x
+    ast o, AST::RenderString, :value => o.value
+  end
+
+  def transform_RenderExpression(o)
+    # TODO_EPP Not supported in 3x
+    ast o, AST::RenderExpression, :value => transform(o.expr)
+  end
+
   def transform_ResourceTypeDefinition(o)
     parameters = o.parameters.collect {|p| transform(p) }
     args = { :arguments => parameters }
@@ -495,23 +519,7 @@ class Puppet::Pops::Model::AstTransformer
   # the "titles" to be an ASTArray.
   #
   def transform_ResourceOverrideExpression(o)
-    resource_ref = o.resources
-    raise "Unacceptable expression for resource override" unless resource_ref.is_a? Model::AccessExpression
-
-    type = case resource_ref.left_expr
-    when Model::QualifiedName
-      # This is deprecated "Resource references should now be capitalized" - this is caught elsewhere
-      resource_ref.left_expr.value
-    when Model::QualifiedReference
-      resource_ref.left_expr.value
-    else
-      raise "Unacceptable expression for resource override; need NAME or CLASSREF"
-    end
-
-    result_ref = ast o, AST::ResourceReference, :type => type, :title => transform(resource_ref.keys)
-
-    # title is one or more expressions, if more than one it should be an ASTArray
-    ast o, AST::ResourceOverride, :object => result_ref, :parameters => transform(o.operations)
+    raise "Unsupported transformation - use the new evaluator"
   end
 
   # Parameter is a parameter in a definition of some kind.
@@ -590,22 +598,18 @@ class Puppet::Pops::Model::AstTransformer
   end
 
   def transform_ResourceBody(o)
-    # expects AST, AST::ASTArray of AST
-    ast o, AST::ResourceInstance, :title => transform(o.title), :parameters => transform(o.operations)
+    raise "Unsupported transformation - use the new evaluator"
   end
 
   def transform_ResourceDefaultsExpression(o)
-    ast o, AST::ResourceDefaults, :type => o.type_ref.value, :parameters => transform(o.operations)
+    raise "Unsupported transformation - use the new evaluator"
   end
 
   # Transformation of ResourceExpression requires calling a method on the resulting
   # AST::Resource if it is virtual or exported
   #
   def transform_ResourceExpression(o)
-    raise "Unacceptable type name expression" unless o.type_name.is_a? Model::QualifiedName
-    resource = ast o, AST::Resource, :type => o.type_name.value, :instances => transform(o.bodies)
-    resource.send("#{o.form}=", true) unless o.form == :regular
-    resource
+    raise "Unsupported transformation - use the new evaluator"
   end
 
   # Transformation of SelectorExpression is limited to certain types of expressions.

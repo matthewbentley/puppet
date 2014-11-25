@@ -4,7 +4,7 @@ extend Puppet::Acceptance::ModuleUtils
 
 module_author = "pmtacceptance"
 module_name   = "java"
-module_dependencies   = ["stdlib"]
+module_dependencies   = ["stdlub"]
 
 orig_installed_modules = get_installed_modules_for_hosts hosts
 teardown do
@@ -22,7 +22,7 @@ on master, puppet("module install #{module_author}-#{module_name}") do
     assert_module_installed_ui(stdout, module_author, dependency)
   end
 end
-assert_module_installed_on_disk(master, master['distmoduledir'], module_name)
+assert_module_installed_on_disk(master, module_name)
 module_dependencies.each do |dependency|
-  assert_module_installed_on_disk(master, master['distmoduledir'], dependency)
+  assert_module_installed_on_disk(master, dependency)
 end

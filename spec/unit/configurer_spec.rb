@@ -12,10 +12,6 @@ describe Puppet::Configurer do
     Puppet[:report] = true
   end
 
-  it "should include the Plugin Handler module" do
-    Puppet::Configurer.ancestors.should be_include(Puppet::Configurer::PluginHandler)
-  end
-
   it "should include the Fact Handler module" do
     Puppet::Configurer.ancestors.should be_include(Puppet::Configurer::FactHandler)
   end
@@ -74,7 +70,7 @@ describe Puppet::Configurer do
       @facts = Puppet::Node::Facts.new(Puppet[:node_name_value])
       Puppet::Node::Facts.indirection.save(@facts)
 
-      @catalog = Puppet::Resource::Catalog.new
+      @catalog = Puppet::Resource::Catalog.new("tester", Puppet::Node::Environment.remote(Puppet[:environment].to_sym))
       @catalog.stubs(:to_ral).returns(@catalog)
       Puppet::Resource::Catalog.indirection.terminus_class = :rest
       Puppet::Resource::Catalog.indirection.stubs(:find).returns(@catalog)
@@ -204,9 +200,12 @@ describe Puppet::Configurer do
     end
 
     it "should send the report" do
-      report = Puppet::Transaction::Report.new("apply")
+      report = Puppet::Transaction::Report.new("apply", nil, "test", "aaaa")
       Puppet::Transaction::Report.expects(:new).returns(report)
       @agent.expects(:send_report).with(report)
+
+      report.environment.should == "test"
+      report.transaction_uuid.should == "aaaa"
 
       @agent.run
     end
@@ -214,9 +213,12 @@ describe Puppet::Configurer do
     it "should send the transaction report even if the catalog could not be retrieved" do
       @agent.expects(:retrieve_catalog).returns nil
 
-      report = Puppet::Transaction::Report.new("apply")
+      report = Puppet::Transaction::Report.new("apply", nil, "test", "aaaa")
       Puppet::Transaction::Report.expects(:new).returns(report)
-      @agent.expects(:send_report)
+      @agent.expects(:send_report).with(report)
+
+      report.environment.should == "test"
+      report.transaction_uuid.should == "aaaa"
 
       @agent.run
     end
@@ -224,9 +226,12 @@ describe Puppet::Configurer do
     it "should send the transaction report even if there is a failure" do
       @agent.expects(:retrieve_catalog).raises "whatever"
 
-      report = Puppet::Transaction::Report.new("apply")
+      report = Puppet::Transaction::Report.new("apply", nil, "test", "aaaa")
       Puppet::Transaction::Report.expects(:new).returns(report)
-      @agent.expects(:send_report)
+      @agent.expects(:send_report).with(report)
+
+      report.environment.should == "test"
+      report.transaction_uuid.should == "aaaa"
 
       @agent.run.should be_nil
     end
@@ -254,7 +259,7 @@ describe Puppet::Configurer do
 
       Puppet.settings[:prerun_command] = "/my/command"
       Puppet::Util::Execution.expects(:execute).with(["/my/command"]).raises(Puppet::ExecutionFailure, "Failed")
-      @agent.expects(:send_report)
+      @agent.expects(:send_report).with(report)
 
       @agent.run.should be_nil
     end
@@ -276,7 +281,7 @@ describe Puppet::Configurer do
 
       Puppet.settings[:postrun_command] = "/my/command"
       Puppet::Util::Execution.expects(:execute).with(["/my/command"]).raises(Puppet::ExecutionFailure, "Failed")
-      @agent.expects(:send_report)
+      @agent.expects(:send_report).with(report)
 
       @agent.run.should be_nil
     end
@@ -349,6 +354,19 @@ describe Puppet::Configurer do
       @agent.run
 
       @agent.environment.should == "second_env"
+    end
+
+    it "should fix the report if the server specifies a new environment in the catalog" do
+      report = Puppet::Transaction::Report.new("apply", nil, "test", "aaaa")
+      Puppet::Transaction::Report.expects(:new).returns(report)
+      @agent.expects(:send_report).with(report)
+
+      @catalog.stubs(:environment).returns("second_env")
+      @agent.stubs(:retrieve_catalog).returns(@catalog)
+
+      @agent.run
+
+      report.environment.should == "second_env"
     end
 
     it "should clear the global caches" do
@@ -505,6 +523,13 @@ describe Puppet::Configurer do
       Puppet.settings.setting(:lastrunfile).expects(:mode).returns('892')
       Puppet.expects(:err).with(regexp_matches(/Could not save last run local report.*892 is invalid/))
       @configurer.save_last_run_summary(@report)
+    end
+  end
+
+  describe "when requesting a node" do
+    it "uses the transaction uuid in the request" do
+      Puppet::Node.indirection.expects(:find).with(anything, has_entries(:transaction_uuid => anything)).twice
+      @agent.run
     end
   end
 

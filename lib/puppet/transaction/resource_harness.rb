@@ -1,6 +1,8 @@
 require 'puppet/resource/status'
 
 class Puppet::Transaction::ResourceHarness
+  NO_ACTION = Object.new
+
   extend Forwardable
   def_delegators :@transaction, :relationship_graph
 
@@ -74,9 +76,14 @@ class Puppet::Transaction::ResourceHarness
       cache(resource, param, context.current_values[param])
     end
 
-    managed_via_ensure = manage_via_ensure_if_possible(resource, context)
+    ensure_param = resource.parameter(:ensure)
+    if ensure_param && ensure_param.should
+      ensure_event = sync_if_needed(ensure_param, context)
+    else
+      ensure_event = NO_ACTION
+    end
 
-    if !managed_via_ensure
+    if ensure_event == NO_ACTION
       if context.resource_present?
         resource.properties.each do |param|
           sync_if_needed(param, context)
@@ -101,15 +108,6 @@ class Puppet::Transaction::ResourceHarness
     end
   end
 
-  def manage_via_ensure_if_possible(resource, context)
-    ensure_param = resource.parameter(:ensure)
-    if ensure_param && ensure_param.should
-      sync_if_needed(ensure_param, context)
-    else
-      false
-    end
-  end
-
   def sync_if_needed(param, context)
     historical_value = context.historical_values[param.name]
     current_value = context.current_values[param.name]
@@ -130,9 +128,9 @@ class Puppet::Transaction::ResourceHarness
           sync(event, param, current_value, brief_audit_message)
         end
 
-        true
+        event
       else
-        false
+        NO_ACTION
       end
     rescue => detail
       # Execution will continue on StandardErrors, just store the event
@@ -141,7 +139,7 @@ class Puppet::Transaction::ResourceHarness
       event = create_change_event(param, current_value, historical_value)
       event.status = "failure"
       event.message = "change from #{param.is_to_s(current_value)} to #{param.should_to_s(param.should)} failed: #{detail}"
-      false
+      event
     rescue Exception => detail
       # Execution will halt on Exceptions, they get raised to the application
       event = create_change_event(param, current_value, historical_value)
@@ -166,10 +164,23 @@ class Puppet::Transaction::ResourceHarness
     event
   end
 
+  # This method is an ugly hack because, given a Time object with nanosecond
+  # resolution, roundtripped through YAML serialization, the Time object will
+  # be truncated to microseconds.
+  # For audit purposes, this code special cases this comparison, and compares
+  # the two objects by their second and microsecond components. tv_sec is the
+  # number of seconds since the epoch, and tv_usec is only the microsecond
+  # portion of time.  This compare satisfies compatibility requirements for
+  # Ruby 1.8.7, where to_r does not exist on the Time class.
+  def are_audited_values_equal(a, b)
+    a == b || (a.is_a?(Time) && b.is_a?(Time) && a.tv_sec == b.tv_sec && a.tv_usec == b.tv_usec)
+  end
+  private :are_audited_values_equal
+
   def audit_event(event, property)
     event.audited = true
     event.status = "audit"
-    if event.historical_value != event.previous_value
+    if !are_audited_values_equal(event.historical_value, event.previous_value)
       event.message = "audit change: previously recorded value #{property.is_to_s(event.historical_value)} has been changed to #{property.is_to_s(event.previous_value)}"
     end
 
@@ -177,7 +188,7 @@ class Puppet::Transaction::ResourceHarness
   end
 
   def audit_message(param, do_audit, historical_value, current_value)
-    if do_audit && historical_value && historical_value != current_value
+    if do_audit && historical_value && !are_audited_values_equal(historical_value, current_value)
       " (previously recorded value was #{param.is_to_s(historical_value)})"
     else
       ""
@@ -198,7 +209,7 @@ class Puppet::Transaction::ResourceHarness
   def capture_audit_events(resource, context)
     context.audited_params.each do |param_name|
       if context.historical_values.include?(param_name)
-        if context.historical_values[param_name] != context.current_values[param_name] && !context.synced_params.include?(param_name)
+        if !are_audited_values_equal(context.historical_values[param_name], context.current_values[param_name]) && !context.synced_params.include?(param_name)
           parameter = resource.parameter(param_name)
           event = audit_event(create_change_event(parameter,
                                                   context.current_values[param_name],
@@ -214,13 +225,15 @@ class Puppet::Transaction::ResourceHarness
   end
 
   # @api private
-  ResourceApplicationContext = Struct.new(:current_values,
+  ResourceApplicationContext = Struct.new(:resource,
+                                          :current_values,
                                           :historical_values,
                                           :audited_params,
                                           :synced_params,
                                           :status) do
     def self.from_resource(resource, status)
-      ResourceApplicationContext.new(resource.retrieve_resource.to_hash,
+      ResourceApplicationContext.new(resource,
+                                     resource.retrieve_resource.to_hash,
                                      Puppet::Util::Storage.cache(resource).dup,
                                      (resource[:audit] || []).map { |p| p.to_sym },
                                      [],
@@ -228,7 +241,7 @@ class Puppet::Transaction::ResourceHarness
     end
 
     def resource_present?
-      current_values[:ensure] != :absent
+      resource.present?(current_values)
     end
 
     def record(event)

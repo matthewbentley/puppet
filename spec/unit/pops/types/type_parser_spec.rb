@@ -5,7 +5,8 @@ describe Puppet::Pops::Types::TypeParser do
   extend RSpec::Matchers::DSL
 
   let(:parser) { Puppet::Pops::Types::TypeParser.new }
-  let(:types) { Puppet::Pops::Types::TypeFactory }
+  let(:types)  { Puppet::Pops::Types::TypeFactory }
+
 
   it "rejects a puppet expression" do
     expect { parser.parse("1 + 1") }.to raise_error(Puppet::ParseError, /The expression <1 \+ 1> is not a valid type specification/)
@@ -30,7 +31,7 @@ describe Puppet::Pops::Types::TypeParser do
   end
 
   [
-    'Object', 'Data', 'CatalogEntry', 'Boolean', 'Literal', 'Undef', 'Numeric',
+    'Any', 'Data', 'CatalogEntry', 'Boolean', 'Scalar', 'Undef', 'Numeric', 'Default'
   ].each do |name|
     it "does not support parameterizing unparameterized type <#{name}>" do
       expect { parser.parse("#{name}[Integer]") }.to raise_unparameterized_error_for(name)
@@ -38,7 +39,7 @@ describe Puppet::Pops::Types::TypeParser do
   end
 
   it "parses a simple, unparameterized type into the type object" do
-    expect(the_type_parsed_from(types.object)).to be_the_type(types.object)
+    expect(the_type_parsed_from(types.any)).to be_the_type(types.any)
     expect(the_type_parsed_from(types.integer)).to be_the_type(types.integer)
     expect(the_type_parsed_from(types.float)).to be_the_type(types.float)
     expect(the_type_parsed_from(types.string)).to be_the_type(types.string)
@@ -47,17 +48,21 @@ describe Puppet::Pops::Types::TypeParser do
     expect(the_type_parsed_from(types.data)).to be_the_type(types.data)
     expect(the_type_parsed_from(types.catalog_entry)).to be_the_type(types.catalog_entry)
     expect(the_type_parsed_from(types.collection)).to be_the_type(types.collection)
+    expect(the_type_parsed_from(types.tuple)).to be_the_type(types.tuple)
+    expect(the_type_parsed_from(types.struct)).to be_the_type(types.struct)
+    expect(the_type_parsed_from(types.optional)).to be_the_type(types.optional)
+    expect(the_type_parsed_from(types.default)).to be_the_type(types.default)
   end
 
   it "interprets an unparameterized Array as an Array of Data" do
     expect(parser.parse("Array")).to be_the_type(types.array_of_data)
   end
 
-  it "interprets an unparameterized Hash as a Hash of Literal to Data" do
+  it "interprets an unparameterized Hash as a Hash of Scalar to Data" do
     expect(parser.parse("Hash")).to be_the_type(types.hash_of_data)
   end
 
-  it "interprets a parameterized Hash[t] as a Hash of Literal to t" do
+  it "interprets a parameterized Hash[t] as a Hash of Scalar to t" do
     expect(parser.parse("Hash[Integer]")).to be_the_type(types.hash_of(types.integer))
   end
 
@@ -87,6 +92,39 @@ describe Puppet::Pops::Types::TypeParser do
 
     expect(the_type_parsed_from(parameterized_array)).to be_the_type(parameterized_array)
     expect(the_type_parsed_from(parameterized_hash)).to be_the_type(parameterized_hash)
+  end
+
+  it "parses optional type" do
+    opt_t = types.optional(Integer)
+    expect(the_type_parsed_from(opt_t)).to be_the_type(opt_t)
+  end
+
+  it "parses tuple type" do
+    tuple_t = types.tuple(Integer, String)
+    expect(the_type_parsed_from(tuple_t)).to be_the_type(tuple_t)
+  end
+
+  it "parses tuple type with occurence constraint" do
+    tuple_t = types.tuple(Integer, String)
+    types.constrain_size(tuple_t, 2, 5)
+    expect(the_type_parsed_from(tuple_t)).to be_the_type(tuple_t)
+  end
+
+  it "parses struct type" do
+    struct_t = types.struct({'a'=>Integer, 'b'=>String})
+    expect(the_type_parsed_from(struct_t)).to be_the_type(struct_t)
+  end
+
+  describe "handles parsing of patterns and regexp" do
+    { 'Pattern[/([a-z]+)([1-9]+)/]'        => [:pattern, [/([a-z]+)([1-9]+)/]],
+      'Pattern["([a-z]+)([1-9]+)"]'        => [:pattern, [/([a-z]+)([1-9]+)/]],
+      'Regexp[/([a-z]+)([1-9]+)/]'         => [:regexp,  [/([a-z]+)([1-9]+)/]],
+      'Pattern[/x9/, /([a-z]+)([1-9]+)/]'  => [:pattern, [/x9/, /([a-z]+)([1-9]+)/]],
+    }.each do |source, type|
+      it "such that the source '#{source}' yields the type #{type.to_s}" do
+        expect(parser.parse(source)).to be_the_type(Puppet::Pops::Types::TypeFactory.send(type[0], *type[1]))
+      end
+    end
   end
 
   it "rejects an collection spec with the wrong number of parameters" do
@@ -135,7 +173,36 @@ describe Puppet::Pops::Types::TypeParser do
   end
 
   it 'parses a ruby type' do
-    expect(parser.parse("Ruby['Integer']")).to be_the_type(types.ruby_type('Integer'))
+    expect(parser.parse("Runtime[ruby, 'Integer']")).to be_the_type(types.ruby_type('Integer'))
+  end
+
+  it 'parses a callable type' do
+    expect(parser.parse("Callable")).to be_the_type(types.all_callables())
+  end
+
+  it 'parses a parameterized callable type' do
+    expect(parser.parse("Callable[String, Integer]")).to be_the_type(types.callable(String, Integer))
+  end
+
+  it 'parses a parameterized callable type with min/max' do
+    expect(parser.parse("Callable[String, Integer, 1, default]")).to be_the_type(types.callable(String, Integer, 1, :default))
+  end
+
+  it 'parses a parameterized callable type with block' do
+    expect(parser.parse("Callable[String, Callable[Boolean]]")).to be_the_type(types.callable(String, types.callable(true)))
+  end
+
+  it 'parses a parameterized callable type with 0 min/max' do
+    t = parser.parse("Callable[0,0]")
+    expect(t).to be_the_type(types.callable())
+    expect(t.param_types.types).to be_empty
+  end
+
+  it 'parses a parameterized callable type with >0 min/max' do
+    t = parser.parse("Callable[0,1]")
+    expect(t).to be_the_type(types.callable(0,1))
+    # Contains a Unit type to indicate "called with what you accept"
+    expect(t.param_types.types[0]).to be_the_type(Puppet::Pops::Types::PUnitType.new())
   end
 
   matcher :be_the_type do |type|

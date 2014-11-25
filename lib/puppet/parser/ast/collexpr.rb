@@ -56,7 +56,7 @@ class CollExpr < AST::Branch
     return match, code
   end
 
-  # Late binding evaluation of a collect expression (as done in 3x), but with proper Puppet Langauge
+  # Late binding evaluation of a collect expression (as done in 3x), but with proper Puppet Language
   # semantics for equals and include
   #
   def evaluate4x(scope)
@@ -85,7 +85,7 @@ class CollExpr < AST::Branch
           resource.tagged?(match2)
         else
           if resource[match1].is_a?(Array)
-            @@compare_operator.include?(resource[match1], match2)
+            @@compare_operator.include?(resource[match1], match2, scope)
           else
             @@compare_operator.equals(resource[match1], match2)
           end

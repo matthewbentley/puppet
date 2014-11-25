@@ -43,22 +43,28 @@ class Puppet::Pops::Parser::Parser
   # before evaluation-time.
   #
   def classname(name)
-    [namespace, name].join("::").sub(/^::/, '')
+    [namespace, name].join('::').sub(/^::/, '')
   end
 
-#  # Reinitializes variables (i.e. creates a new lexer instance
-#  #
-#  def clear
-#    initvars
-#  end
-
-  # Raises a Parse error.
-  def error(value, message, options = {})
+  # Raises a Parse error with location information. Information about file is always obtained from the
+  # lexer. Line and position is produced if the given semantic is a Positioned object and have been given an offset.
+  #
+  def error(semantic, message)
+    semantic = semantic.current() if semantic.is_a?(Puppet::Pops::Model::Factory)
+    # Adapt the model so it is possible to get location information.
+    # The model may not have been added to the source tree, so give it the lexer's locator
+    # directly instead of searching for the root Program where the locator is normally stored.
+    #
+    if semantic.is_a?(Puppet::Pops::Model::Positioned)
+      adapter = Puppet::Pops::Adapters::SourcePosAdapter.adapt(semantic)
+      adapter.locator = @lexer.locator
+    else
+      adapter = nil
+    end
     except = Puppet::ParseError.new(message)
-    except.line = options[:line] || value[:line]
-    except.file = options[:file] || value[:file] # @lexer.file
-    except.pos = options[:pos]   || value[:pos] # @lexer.pos
-
+    except.file = @lexer.locator.file
+    except.line = adapter.line if adapter
+    except.pos = adapter.pos if adapter
     raise except
   end
 
@@ -74,24 +80,12 @@ class Puppet::Pops::Parser::Parser
   end
 
   def initialize()
-    # Since the parser is not responsible for importing (removed), and does not perform linking,
-    # and there is no syntax that requires knowing if something referenced exists, it is safe
-    # to assume that no environment is needed when parsing. (All that comes later).
-    #
     @lexer = Puppet::Pops::Parser::Lexer2.new
     @namestack = []
     @definitions = []
   end
 
-#  # Initializes the parser support by creating a new instance of {Puppet::Pops::Parser::Lexer}
-#  # @return [void]
-#  #
-#  def initvars
-#  end
-
-  # This is a callback from the generated grammar (when an error occurs while parsing)
-  # TODO Picks up origin information from the lexer, probably needs this from the caller instead
-  #   (for code strings, and when start line is not line 1 in a code string (or file), etc.)
+  # This is a callback from the generated parser (when an error occurs while parsing)
   #
   def on_error(token,value,stack)
     if token == 0 # denotes end of file
@@ -99,8 +93,13 @@ class Puppet::Pops::Parser::Parser
     else
       value_at = "'#{value[:value]}'"
     end
-    error = "Syntax error at #{value_at}"
+    if @yydebug
+      error = "Syntax error at #{value_at}, token: #{token}"
+    else
+      error = "Syntax error at #{value_at}"
+    end
 
+    # Note, old parser had processing of "expected token here" - do not try to reinstate:
     # The 'expected' is only of value at end of input, otherwise any parse error involving a
     # start of a pair will be reported as expecting the close of the pair - e.g. "$x.each |$x {|", would
     # report that "seeing the '{', the '}' is expected. That would be wrong.
@@ -111,9 +110,6 @@ class Puppet::Pops::Parser::Parser
     # must be handled by the grammar. The lexer may have enqueued tokens far ahead - the lexer's opinion about this
     # is not trustworthy.
     #
-#    if token == 0 && brace = @lexer.expected
-#      error += "; expected '#{brace}'"
-#    end
 
     except = Puppet::ParseError.new(error)
     if token != 0
@@ -130,15 +126,13 @@ class Puppet::Pops::Parser::Parser
   end
 
   # Parses a String of pp DSL code.
-  # @todo make it possible to pass a given origin
   #
-  def parse_string(code)
-    @lexer.string = code
+  def parse_string(code, path = '')
+    @lexer.lex_string(code, path)
     _parse()
   end
 
   # Mark the factory wrapped model object with location information
-  # @todo the lexer produces :line for token, but no offset or length
   # @return [Puppet::Pops::Model::Factory] the given factory
   # @api private
   #
@@ -146,11 +140,12 @@ class Puppet::Pops::Parser::Parser
     factory.record_position(start_locateable, end_locateable)
   end
 
-  # Associate documentation with the factory wrapped model object.
+  # Mark the factory wrapped heredoc model object with location information
   # @return [Puppet::Pops::Model::Factory] the given factory
   # @api private
-  def doc factory, doc_string
-    factory.doc = doc_string
+  #
+  def heredoc_loc(factory, start_locateabke, end_locateable = nil)
+    factory.record_heredoc_position(start_locatable, end_locatable)
   end
 
   def aryfy(o)
@@ -179,22 +174,56 @@ class Puppet::Pops::Parser::Parser
   # expression, or expression list
   #
   def transform_calls(expressions)
-    Factory.transform_calls(expressions)
+    # Factory transform raises an error if a non qualified name is followed by an argument list
+    # since there is no way that that can be transformed back to sanity. This occurs in situations like this:
+    #
+    #  $a = 10, notice hello
+    #
+    # where the "10, notice" forms an argument list. The parser builds an Array with the expressions and includes
+    # the comma tokens to enable the error to be reported against the first comma.
+    #
+    begin
+      Factory.transform_calls(expressions)
+    rescue Puppet::Pops::Model::Factory::ArgsToNonCallError => e
+      # e.args[1] is the first comma token in the list
+      # e.name_expr is the function name expression
+      if e.name_expr.is_a?(Puppet::Pops::Model::QualifiedName)
+        error(e.args[1], "attempt to pass argument list to the function '#{e.name_expr.value}' which cannot be called without parentheses")
+      else
+        error(e.args[1], "illegal comma separated argument list")
+      end
+    end
   end
 
-  # If there are definitions that require initialization a Program is produced, else the body
+  # Transforms a LEFT followed by the result of attribute_operations, this may be a call or an invalid sequence
+  def transform_resource_wo_title(left, resource)
+    Factory.transform_resource_wo_title(left, resource)
+  end
+
+  # Creates a program with the given body.
+  #
   def create_program(body)
     locator = @lexer.locator
     Factory.PROGRAM(body, definitions, locator)
   end
 
+  # Creates an empty program with a single No-op at the input's EOF offset with 0 length.
+  #
+  def create_empty_program()
+    locator = @lexer.locator
+    no_op = Factory.literal(nil)
+    # Create a synthetic NOOP token at EOF offset with 0 size. The lexer does not produce an EOF token that is
+    # visible to the grammar rules. Creating this token is mainly to reuse the positioning logic as it
+    # expects a token decorated with location information.
+    token_sym, token = @lexer.emit_completed([:NOOP,'',0], locator.string.bytesize)
+    loc(no_op, token)
+    # Program with a Noop
+    program = Factory.PROGRAM(no_op, [], locator)
+    program
+  end
+
   # Performs the parsing and returns the resulting model.
   # The lexer holds state, and this is setup with {#parse_string}, or {#parse_file}.
-  #
-  # TODO: Drop support for parsing a ruby file this way (should be done where it is decided
-  #   which file to load/run (i.e. loaders), and initial file to run
-  # TODO: deal with options containing origin (i.e. parsing a string from externally known location).
-  # TODO: should return the model, not a Hostclass
   #
   # @api private
   #
@@ -202,15 +231,6 @@ class Puppet::Pops::Parser::Parser
     begin
       @yydebug = false
       main = yyparse(@lexer,:scan)
-      # #Commented out now because this hides problems in the racc grammar while developing
-      # # TODO include this when test coverage is good enough.
-      #      rescue Puppet::ParseError => except
-      #        except.line ||= @lexer.line
-      #        except.file ||= @lexer.file
-      #        except.pos  ||= @lexer.pos
-      #        raise except
-      #      rescue => except
-      #        raise Puppet::ParseError.new(except.message, @lexer.file, @lexer.line, @lexer.pos, except)
     end
     return main
   ensure

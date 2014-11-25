@@ -52,9 +52,38 @@ module PuppetSpec::Files
     dir
   end
 
+  def dir_containing(name, contents_hash) PuppetSpec::Files.dir_containing(name, contents_hash) end
+  def self.dir_containing(name, contents_hash)
+    dir_contained_in(tmpdir(name), contents_hash)
+  end
+
+  def dir_contained_in(dir, contents_hash) PuppetSpec::Files.dir_contained_in(dir, contents_hash) end
+  def self.dir_contained_in(dir, contents_hash)
+    contents_hash.each do |k,v|
+      if v.is_a?(Hash)
+        Dir.mkdir(tmp = File.join(dir,k))
+        dir_contained_in(tmp, v)
+      else
+        file = File.join(dir, k)
+        File.open(file, 'wb') {|f| f.write(v) }
+      end
+    end
+    dir
+  end
+
   def self.record_tmp(tmp)
     # ...record it for cleanup,
     $global_tempfiles ||= []
     $global_tempfiles << tmp
+  end
+
+  def expect_file_mode(file, mode)
+    actual_mode = "%o" % Puppet::FileSystem.stat(file).mode
+    target_mode = if Puppet.features.microsoft_windows?
+      mode
+    else
+      "10" + "%04i" % mode.to_i
+    end
+    actual_mode.should == target_mode
   end
 end

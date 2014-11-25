@@ -7,16 +7,29 @@ class Puppet::Network::HTTP::API::V2::Environments
 
   def call(request, response)
     response.respond_with(200, "application/json", JSON.dump({
-      "search_path" => @env_loader.search_paths,
+      "search_paths" => @env_loader.search_paths,
       "environments" => Hash[@env_loader.list.collect do |env|
         [env.name, {
-          "modules" => Hash[env.modules.collect do |mod|
-            [mod.name, {
-              "version" => mod.version
-            }]
-          end]
+          "settings" => {
+            "modulepath" => env.full_modulepath,
+            "manifest" => env.manifest,
+            "environment_timeout" => timeout(env),
+            "config_version" => env.config_version || '',
+          }
         }]
       end]
     }))
   end
+
+  private
+
+  def timeout(env)
+    ttl = @env_loader.get_conf(env.name).environment_timeout
+    if ttl == 1.0 / 0.0 # INFINITY
+      "unlimited"
+    else
+      ttl
+    end
+  end
+
 end

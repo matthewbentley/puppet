@@ -1,5 +1,6 @@
 require 'puppet/util/logging'
 require 'semver'
+require 'json'
 
 # Support for modules
 class Puppet::Module
@@ -27,10 +28,12 @@ class Puppet::Module
   # of +path+, return +nil+
   def self.find(modname, environment = nil)
     return nil unless modname
-    Puppet::Node::Environment.new(environment).module(modname)
+    # Unless a specific environment is given, use the current environment
+    env = environment ? Puppet.lookup(:environments).get!(environment) : Puppet.lookup(:current_environment)
+    env.module(modname)
   end
 
-  attr_reader :name, :environment, :path
+  attr_reader :name, :environment, :path, :metadata
   attr_writer :environment
 
   attr_accessor :dependencies, :forge_name
@@ -56,8 +59,8 @@ class Puppet::Module
     return false unless Puppet::FileSystem.exist?(metadata_file)
 
     begin
-      metadata =  PSON.parse(File.read(metadata_file))
-    rescue PSON::PSONError => e
+      metadata =  JSON.parse(File.read(metadata_file))
+    rescue JSON::JSONError => e
       Puppet.debug("#{name} has an invalid and unparsable metadata.json file.  The parse error: #{e.message}")
       return false
     end
@@ -111,7 +114,7 @@ class Puppet::Module
   end
 
   def load_metadata
-    data = PSON.parse File.read(metadata_file)
+    @metadata = data = JSON.parse(File.read(metadata_file))
     @forge_name = data['name'].gsub('-', '/') if data['name']
 
     [:source, :author, :version, :license, :puppetversion, :dependencies].each do |attr|

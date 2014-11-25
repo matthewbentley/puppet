@@ -11,8 +11,19 @@ describe Puppet::Resource::Catalog::StaticCompiler do
   end
 
   before :each do
+    Facter.stubs(:loadfacts)
     Facter.stubs(:to_hash).returns({})
     Facter.stubs(:value)
+  end
+
+  around(:each) do |example|
+    Puppet.override({
+        :current_environment => Puppet::Node::Environment.create(:app, []),
+      },
+      "Ensure we are using an environment other than root"
+    ) do
+      example.run
+    end
   end
 
   let(:request) do
@@ -128,7 +139,8 @@ describe Puppet::Resource::Catalog::StaticCompiler do
     options[:request] ||= request
 
     # Build a catalog suitable for the static compiler to operate on
-    catalog = Puppet::Resource::Catalog.new("#{options[:request].key}")
+    environment = Puppet::Node::Environment.remote(:testing)
+    catalog = Puppet::Resource::Catalog.new("#{options[:request].key}", environment)
 
     # Mock out the fileserver, otherwise converting the catalog to a
     fake_fileserver_metadata = fileserver_metadata(options)
@@ -136,9 +148,11 @@ describe Puppet::Resource::Catalog::StaticCompiler do
     # Stub the call to the FileServer metadata API so we don't have to have
     # a real fileserver initialized for testing.
     Puppet::FileServing::Metadata.
-      indirection.stubs(:find).
-      with() { |*args| args[0] == options[:source].sub('puppet:///','') and args[1] == {:links => :manage, :environment => nil}}.
-      returns(fake_fileserver_metadata)
+      indirection.stubs(:find).with do |uri, opts|
+        expect(uri).to eq options[:source].sub('puppet:///','')
+        expect(opts[:links]).to eq :manage
+        expect(opts[:environment]).to eq environment
+      end.returns(fake_fileserver_metadata)
 
     # I want a resource that all the file resources require and another
     # that requires them.
@@ -205,7 +219,7 @@ describe Puppet::Resource::Catalog::StaticCompiler do
 --- !ruby/object:Puppet::FileServing::Metadata
   checksum: "{md5}361fadf1c712e812d198c4cab5712a79"
   checksum_type: md5
-  destination: 
+  destination:
   expiration: #{Time.now + 1800}
   ftype: file
   group: 0

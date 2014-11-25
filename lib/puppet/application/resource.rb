@@ -6,7 +6,6 @@ class Puppet::Application::Resource < Puppet::Application
 
   def preinit
     @extra_params = []
-    Facter.loadfacts
   end
 
   option("--debug","-d")
@@ -71,9 +70,9 @@ and then apply the saved file as a Puppet transaction.
 
 OPTIONS
 -------
-Note that any configuration parameter that's valid in the configuration
+Note that any setting that's valid in the configuration
 file is also a valid long argument. For example, 'ssldir' is a valid
-configuration parameter, so you can specify '--ssldir <directory>' as an
+setting, so you can specify '--ssldir <directory>' as an
 argument.
 
 See the configuration file documentation at

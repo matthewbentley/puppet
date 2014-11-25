@@ -5,29 +5,36 @@ require 'matchers/json'
 describe Puppet::Node do
   include JSONMatchers
 
+  let(:environment) { Puppet::Node::Environment.create(:bar, []) }
+  let(:env_loader) { Puppet::Environments::Static.new(environment) }
+
   it "should register its document type as Node" do
     PSON.registered_document_types["Node"].should equal(Puppet::Node)
   end
 
   describe "when managing its environment" do
     it "should use any set environment" do
-      Puppet::Node.new("foo", :environment => "bar").environment.name.should == :bar
+      Puppet.override(:environments => env_loader) do
+        Puppet::Node.new("foo", :environment => "bar").environment.should == environment
+      end
     end
 
     it "should support providing an actual environment instance" do
-      Puppet::Node.new("foo", :environment => Puppet::Node::Environment.new(:bar)).environment.name.should == :bar
+      Puppet::Node.new("foo", :environment => environment).environment.name.should == :bar
     end
 
     it "should determine its environment from its parameters if no environment is set" do
-      Puppet::Node.new("foo", :parameters => {"environment" => :bar}).environment.name.should == :bar
+      Puppet.override(:environments => env_loader) do
+        Puppet::Node.new("foo", :parameters => {"environment" => :bar}).environment.should == environment
+      end
     end
 
-    it "should use the default environment if no environment is provided" do
-      Puppet::Node.new("foo").environment.name.should == Puppet::Node::Environment.new.name
-    end
+    it "should use the configured environment if no environment is provided" do
+      Puppet[:environment] = environment.name.to_s
 
-    it "should always return an environment instance rather than a string" do
-      Puppet::Node.new("foo").environment.should be_instance_of(Puppet::Node::Environment)
+      Puppet.override(:environments => env_loader) do
+        Puppet::Node.new("foo").environment.should == environment
+      end
     end
 
     it "should allow the environment to be set after initialization" do
@@ -150,9 +157,9 @@ describe Puppet::Node do
       Puppet::Node.should read_json_attribute('parameters').from(@node.to_pson).as({"a" => "b", "c" => "d"})
     end
 
-    it "should include the environment" do
-      @node.environment = "production"
-      Puppet::Node.should read_json_attribute('environment').from(@node.to_pson).as(Puppet::Node::Environment.new(:production))
+    it "deserializes environment to environment_name as a string" do
+      @node.environment = environment
+      Puppet::Node.should read_json_attribute('environment_name').from(@node.to_pson).as('bar')
     end
   end
 end

@@ -20,8 +20,7 @@ Puppet::Type.newtype(:file) do
   @doc = "Manages files, including their content, ownership, and permissions.
 
     The `file` type can manage normal files, directories, and symlinks; the
-    type should be specified in the `ensure` attribute. Note that symlinks cannot
-    be managed on Windows systems.
+    type should be specified in the `ensure` attribute.
 
     File contents can be managed directly with the `content` attribute, or
     downloaded from a remote source using the `source` attribute; the latter
@@ -126,17 +125,34 @@ Puppet::Type.newtype(:file) do
   end
 
   newparam(:recurse) do
-    desc "Whether and how to do recursive file management. Options are:
+    desc "Whether to recursively manage the _contents_ of a directory. This attribute
+      is only used when `ensure => directory` is set. The allowed values are:
 
-      * `inf,true` --- Regular style recursion on both remote and local
-        directory structure.  See `recurselimit` to specify a limit to the
-        recursion depth.
-      * `remote` --- Descends recursively into the remote (source) directory
-        but not the local (destination) directory. Allows copying of
-        a few files into a directory containing many
-        unmanaged files without scanning all the local files.
-        This can only be used when a source parameter is specified. 
-      * `false` --- Default of no recursion.
+      * `false` --- The default behavior. The contents of the directory will not be
+        automatically managed.
+      * `remote` --- If the `source` attribute is set, Puppet will automatically
+        manage the contents of the source directory (or directories), ensuring
+        that equivalent files and directories exist on the target system and
+        that their contents match.
+
+        Using `remote` will disable the `purge` attribute, but results in faster
+        catalog application than `recurse => true`.
+
+        The `source` attribute is mandatory when `recurse => remote`.
+      * `true` --- If the `source` attribute is set, this behaves similarly to
+        `recurse => remote`, automatically managing files from the source directory.
+
+        This also enables the `purge` attribute, which can delete unmanaged
+        files from a directory. See the description of `purge` for more details.
+
+        The `source` attribute is not mandatory when using `recurse => true`, so you
+        can enable purging in directories where all files are managed individually.
+
+        (Note: `inf` is a deprecated synonym for `true`.)
+
+      By default, setting recurse to `remote` or `true` will manage _all_
+      subdirectories. You can use the `recurselimit` attribute to limit the
+      recursion depth.
     "
 
     newvalues(:true, :false, :inf, :remote)
@@ -155,7 +171,24 @@ Puppet::Type.newtype(:file) do
   end
 
   newparam(:recurselimit) do
-    desc "How deeply to do recursive management."
+    desc "How far Puppet should descend into subdirectories, when using
+      `ensure => directory` and either `recurse => true` or `recurse => remote`.
+      The recursion limit affects which files will be copied from the `source`
+      directory, as well as which files can be purged when `purge => true`.
+
+      Setting `recurselimit => 0` is the same as setting `recurse => false` ---
+      Puppet will manage the directory, but all of its contents will be treated
+      as unmanaged.
+
+      Setting `recurselimit => 1` will manage files and directories that are
+      directly inside the directory, but will not manage the contents of any
+      subdirectories.
+
+      Setting `recurselimit => 2` will manage the direct contents of the
+      directory, as well as the contents of the _first_ level of subdirectories.
+
+      And so on --- 3 will manage the contents of the second level of
+      subdirectories, etc."
 
     newvalues(/^[0-9]+$/)
 
@@ -218,7 +251,7 @@ Puppet::Type.newtype(:file) do
 
   newparam(:purge, :boolean => true, :parent => Puppet::Parameter::Boolean) do
     desc "Whether unmanaged files should be purged. This option only makes
-      sense when managing directories with `recurse => true`.
+      sense when `ensure => directory` and `recurse => true`.
 
       * When recursively duplicating an entire directory with the `source`
         attribute, `purge => true` will automatically purge any files
@@ -228,7 +261,14 @@ Puppet::Type.newtype(:file) do
         specifically managed.
 
       If you have a filebucket configured, the purged files will be uploaded,
-      but if you do not, this will destroy data."
+      but if you do not, this will destroy data.
+
+      Unless `force => true` is set, purging will **not** delete directories,
+      although it will delete the files they contain.
+
+      If `recurselimit` is set and you aren't using `force => true`, purging
+      will obey the recursion limit; files in any subdirectories deeper than the
+      limit will be treated as unmanaged and left alone."
 
     defaultto :false
   end
@@ -250,10 +290,42 @@ Puppet::Type.newtype(:file) do
     desc "Whether to display differences when the file changes, defaulting to
         true.  This parameter is useful for files that may contain passwords or
         other secret data, which might otherwise be included in Puppet reports or
-        other insecure outputs.  If the global ``show_diff` configuration parameter
+        other insecure outputs.  If the global `show_diff` setting
         is false, then no diffs will be shown even if this parameter is true."
 
     defaultto :true
+  end
+
+  newparam(:validate_cmd) do
+    desc "A command for validating the file's syntax before replacing it. If
+      Puppet would need to rewrite a file due to new `source` or `content`, it
+      will check the new content's validity first. If validation fails, the file
+      resource will fail.
+
+      This command must have a fully qualified path, and should contain a
+      percent (`%`) token where it would expect an input file. It must exit `0`
+      if the syntax is correct, and non-zero otherwise. The command will be
+      run on the target system while applying the catalog, not on the puppet master.
+
+      Example:
+
+          file { '/etc/apache2/apache2.conf':
+            content      => 'example',
+            validate_cmd => '/usr/sbin/apache2 -t -f %',
+          }
+
+      This would replace apache2.conf only if the test returned true.
+
+      Note that if a validation command requires a `%` as part of its text,
+      you can specify a different placeholder token with the
+      `validate_replacement` attribute."
+  end
+
+  newparam(:validate_replacement) do
+    desc "The replacement string in a `validate_cmd` that will be replaced
+      with an input file name. Defaults to: `%`"
+
+    defaultto '%'
   end
 
   # Autorequire the nearest ancestor directory found in the catalog.
@@ -367,6 +439,10 @@ Puppet::Type.newtype(:file) do
   # we have a stat
   def exist?
     stat ? true : false
+  end
+
+  def present?(current_values)
+    super && current_values[:ensure] != :false
   end
 
   # We have to do some extra finishing, to retrieve our bucket if
@@ -577,7 +653,9 @@ Puppet::Type.newtype(:file) do
       end
       children[meta.relative_path] ||= newchild(meta.relative_path)
       children[meta.relative_path][:source] = meta.source
-      children[meta.relative_path][:checksum] = :md5 if meta.ftype == "file"
+      if meta.ftype == "file"
+        children[meta.relative_path][:checksum] = Puppet[:digest_algorithm].to_sym
+      end
 
       children[meta.relative_path].parameter(:source).metadata = meta
     end
@@ -593,7 +671,7 @@ Puppet::Type.newtype(:file) do
       :recurselimit => self[:recurselimit],
       :ignore => self[:ignore],
       :checksum_type => (self[:source] || self[:content]) ? self[:checksum] : :none,
-      :environment => catalog.environment
+      :environment => catalog.environment_instance
     )
   end
 
@@ -722,6 +800,12 @@ Puppet::Type.newtype(:file) do
         content_checksum = write_content(file)
         file.flush
         fail_if_checksum_is_wrong(file.path, content_checksum) if validate_checksum?
+        if self[:validate_cmd]
+          output = Puppet::Util::Execution.execute(self[:validate_cmd].gsub(self[:validate_replacement], file.path), :failonfail => true, :combine => true)
+          output.split(/\n/).each { |line|
+            self.debug(line)
+          }
+        end
       end
     else
       umask = mode ? 000 : 022

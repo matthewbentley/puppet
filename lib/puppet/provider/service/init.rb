@@ -47,6 +47,14 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     # by the fix for this (bug https://bugs.launchpad.net/ubuntu/+source/lightdm/+bug/982889)
     # due to puppet's inability to deal with upstart services with instances.
     excludes += %w{plymouth-ready}
+    # Prevent puppet failing to get status of these services, which need parameters
+    # passed in (see https://bugs.launchpad.net/ubuntu/+source/puppet/+bug/1276766).
+    excludes += %w{idmapd-mounting startpar-bridge}
+    # Prevent puppet failing to get status of these services, additional upstart
+    # service with instances
+    excludes += %w{cryptdisks-udev}
+    excludes += %w{statd-mounting}
+    excludes += %w{gssd-mounting}
   end
 
   # List all services of this type.

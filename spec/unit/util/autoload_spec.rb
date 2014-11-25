@@ -5,10 +5,10 @@ require 'puppet/util/autoload'
 
 describe Puppet::Util::Autoload do
   include PuppetSpec::Files
+
   before do
     @autoload = Puppet::Util::Autoload.new("foo", "tmp")
 
-    @autoload.stubs(:eachdir).yields make_absolute("/my/dir")
     @loaded = {}
     @autoload.class.stubs(:loaded).returns(@loaded)
   end
@@ -17,55 +17,51 @@ describe Puppet::Util::Autoload do
     before :each do
       ## modulepath/libdir can't be used until after app settings are initialized, so we need to simulate that:
       Puppet.settings.expects(:app_defaults_initialized?).returns(true).at_least_once
-
-      @dira = File.expand_path('/a')
-      @dirb = File.expand_path('/b')
-      @dirc = File.expand_path('/c')
     end
 
     it "should collect all of the lib directories that exist in the current environment's module path" do
-      Puppet.settings.parse_config(<<-CONF)
-      [foo]
-      modulepath = #{@dira}#{File::PATH_SEPARATOR}#{@dirb}#{File::PATH_SEPARATOR}#{@dirc}
-      CONF
+      dira = dir_containing('dir_a', {
+        "one" => {},
+        "two" => { "lib" => {} }
+      })
 
-      Puppet[:environment] = "foo"
-      Dir.expects(:entries).with(@dira).returns %w{one two}
-      Dir.expects(:entries).with(@dirb).returns %w{one two}
+      dirb = dir_containing('dir_a', {
+        "one" => {},
+        "two" => { "lib" => {} }
+      })
 
-      FileTest.stubs(:directory?).returns false
-      FileTest.expects(:directory?).with(@dira).returns true
-      FileTest.expects(:directory?).with(@dirb).returns true
-      ["#{@dira}/two/lib", "#{@dirb}/two/lib"].each do |d|
-        FileTest.expects(:directory?).with(d).returns true
-      end
+      environment = Puppet::Node::Environment.create(:foo, [dira, dirb])
 
-      @autoload.class.module_directories.should == ["#{@dira}/two/lib", "#{@dirb}/two/lib"]
+      @autoload.class.module_directories(environment).should == ["#{dira}/two/lib", "#{dirb}/two/lib"]
     end
 
-    it "should not look for lib directories in directories starting with '.'" do
-      Puppet.settings.parse_config(<<-CONF)
-      [foo]
-      modulepath = #{@dira}
-      CONF
+    it "ignores missing module directories" do
+      environment = Puppet::Node::Environment.create(:foo, [File.expand_path('does/not/exist')])
 
-      Puppet[:environment] = "foo"
-      Dir.expects(:entries).with(@dira).returns %w{. ..}
+      @autoload.class.module_directories(environment).should be_empty
+    end
 
-      FileTest.expects(:directory?).with(@dira).returns true
-      FileTest.expects(:directory?).with("#{@dira}/./lib").never
-      FileTest.expects(:directory?).with("#{@dira}/./plugins").never
-      FileTest.expects(:directory?).with("#{@dira}/../lib").never
-      FileTest.expects(:directory?).with("#{@dira}/../plugins").never
+    it "ignores the configured environment when it doesn't exist" do
+      Puppet[:environment] = 'nonexistent'
 
-      @autoload.class.module_directories
+      Puppet.override({ :environments => Puppet::Environments::Static.new() }) do
+        @autoload.class.module_directories(nil).should be_empty
+      end
+    end
+
+    it "uses the configured environment when no environment is given" do
+      Puppet[:environment] = 'nonexistent'
+
+      Puppet.override({ :environments => Puppet::Environments::Static.new() }) do
+        @autoload.class.module_directories(nil).should be_empty
+      end
     end
 
     it "should include the module directories, the Puppet libdir, and all of the Ruby load directories" do
       Puppet[:libdir] = %w{/libdir1 /lib/dir/two /third/lib/dir}.join(File::PATH_SEPARATOR)
       @autoload.class.expects(:gem_directories).returns %w{/one /two}
       @autoload.class.expects(:module_directories).returns %w{/three /four}
-      @autoload.class.search_directories.should == %w{/one /two /three /four} + Puppet[:libdir].split(File::PATH_SEPARATOR) + $LOAD_PATH
+      @autoload.class.search_directories(nil).should == %w{/one /two /three /four} + Puppet[:libdir].split(File::PATH_SEPARATOR) + $LOAD_PATH
     end
   end
 

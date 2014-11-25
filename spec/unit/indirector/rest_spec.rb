@@ -136,6 +136,12 @@ describe Puppet::Indirector::REST do
   let(:indirection) { Puppet::TestModel.indirection }
   let(:model) { Puppet::TestModel }
 
+  around(:each) do |example|
+    Puppet.override(:current_environment => Puppet::Node::Environment.create(:production, [])) do
+      example.run
+    end
+  end
+
   def mock_response(code, body, content_type='text/plain', encoding=nil)
     obj = stub('http 200 ok', :code => code.to_s, :body => body)
     obj.stubs(:[]).with('content-type').returns(content_type)
@@ -275,6 +281,52 @@ describe Puppet::Indirector::REST do
       connection.expects(:get).returns(response)
 
       terminus.find(request).should == nil
+    end
+
+    it 'raises no warning for a 404 (when not asked to do so)' do
+      response = mock_response('404', 'this is the notfound you are looking for')
+      connection.expects(:get).returns(response)
+      expected_message = 'Find /production/test_model/foo? resulted in 404 with the message: this is the notfound you are looking for'
+      expect{terminus.find(request)}.to_not raise_error()
+    end
+
+    context 'when fail_on_404 is used in request' do
+      it 'raises an error for a 404 when asked to do so' do
+        request = find_request('foo', :fail_on_404 => true)
+        response = mock_response('404', 'this is the notfound you are looking for')
+        connection.expects(:get).returns(response)
+
+        expect do
+          terminus.find(request)
+        end.to raise_error(
+          Puppet::Error,
+          'Find /production/test_model/foo?fail_on_404=true resulted in 404 with the message: this is the notfound you are looking for')
+      end
+
+      it 'truncates the URI when it is very long' do
+        request = find_request('foo', :fail_on_404 => true, :long_param => ('A' * 100) + 'B')
+        response = mock_response('404', 'this is the notfound you are looking for')
+        connection.expects(:get).returns(response)
+
+        expect do
+          terminus.find(request)
+        end.to raise_error(
+          Puppet::Error,
+          /\/production\/test_model\/foo.*long_param=A+\.\.\..*resulted in 404 with the message/)
+      end
+
+      it 'does not truncate the URI when logging debug information' do
+        Puppet.debug = true
+        request = find_request('foo', :fail_on_404 => true, :long_param => ('A' * 100) + 'B')
+        response = mock_response('404', 'this is the notfound you are looking for')
+        connection.expects(:get).returns(response)
+
+        expect do
+          terminus.find(request)
+        end.to raise_error(
+          Puppet::Error,
+          /\/production\/test_model\/foo.*long_param=A+B.*resulted in 404 with the message/)
+      end
     end
 
     it "asks the model to deserialize the response body and sets the name on the resulting object to the find key" do

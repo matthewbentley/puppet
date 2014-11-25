@@ -7,8 +7,10 @@ require 'matchers/json'
 describe Puppet::Network::HTTP::API::V2::Environments do
   include JSONMatchers
 
-  it "responds with all of the available environments environments" do
-    handler = Puppet::Network::HTTP::API::V2::Environments.new(TestingEnvironmentLoader.new)
+  it "responds with all of the available environments" do
+    environment = Puppet::Node::Environment.create(:production, ["/first", "/second"], '/manifests')
+    loader = Puppet::Environments::Static.new(environment)
+    handler = Puppet::Network::HTTP::API::V2::Environments.new(loader)
     response = Puppet::Network::HTTP::MemoryResponse.new
 
     handler.call(Puppet::Network::HTTP::Request.from_hash(:headers => { 'accept' => 'application/json' }), response)
@@ -16,21 +18,27 @@ describe Puppet::Network::HTTP::API::V2::Environments do
     expect(response.code).to eq(200)
     expect(response.type).to eq("application/json")
     expect(JSON.parse(response.body)).to eq({
-      "search_path" => ["file:///fake"],
+      "search_paths" => loader.search_paths,
       "environments" => {
         "production" => {
-          "modules" => {
-            "testing" => {
-              "version" => "1.2.3"
-            }
+          "settings" => {
+            "modulepath" => [File.expand_path("/first"), File.expand_path("/second")],
+            "manifest" => File.expand_path("/manifests"),
+            "environment_timeout" => 0,
+            "config_version" => ""
           }
         }
       }
     })
   end
 
-  it "the response conforms to the environments schema" do
-    handler = Puppet::Network::HTTP::API::V2::Environments.new(TestingEnvironmentLoader.new)
+  it "the response conforms to the environments schema for unlimited timeout" do
+    conf_stub = stub 'conf_stub'
+    conf_stub.expects(:environment_timeout).returns(1.0 / 0.0)
+    environment = Puppet::Node::Environment.create(:production, [])
+    env_loader = Puppet::Environments::Static.new(environment)
+    env_loader.expects(:get_conf).with(:production).returns(conf_stub)
+    handler = Puppet::Network::HTTP::API::V2::Environments.new(env_loader)
     response = Puppet::Network::HTTP::MemoryResponse.new
 
     handler.call(Puppet::Network::HTTP::Request.from_hash(:headers => { 'accept' => 'application/json' }), response)
@@ -38,21 +46,18 @@ describe Puppet::Network::HTTP::API::V2::Environments do
     expect(response.body).to validate_against('api/schemas/environments.json')
   end
 
-  class TestingEnvironmentLoader
-    def search_paths
-      ["file:///fake"]
-    end
+  it "the response conforms to the environments schema for integer timeout" do
+    conf_stub = stub 'conf_stub'
+    conf_stub.expects(:environment_timeout).returns(1)
+    environment = Puppet::Node::Environment.create(:production, [])
+    env_loader = Puppet::Environments::Static.new(environment)
+    env_loader.expects(:get_conf).with(:production).returns(conf_stub)
+    handler = Puppet::Network::HTTP::API::V2::Environments.new(env_loader)
+    response = Puppet::Network::HTTP::MemoryResponse.new
 
-    def list
-      [FakeEnvironment.new(:production)]
-    end
+    handler.call(Puppet::Network::HTTP::Request.from_hash(:headers => { 'accept' => 'application/json' }), response)
+
+    expect(response.body).to validate_against('api/schemas/environments.json')
   end
 
-  class FakeEnvironment < Puppet::Node::Environment
-    def modules
-      fake_module = Puppet::Module.new('testing', '/somewhere/on/disk', self)
-      fake_module.version = "1.2.3"
-      [fake_module]
-    end
-  end
 end

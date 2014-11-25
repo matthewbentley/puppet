@@ -43,6 +43,75 @@ describe Puppet::Node::Environment do
       Puppet::Node::Environment.new(one).should equal(one)
     end
 
+    describe "equality" do
+      it "works as a hash key" do
+        base = Puppet::Node::Environment.create(:first, ["modules"], "manifests")
+        same = Puppet::Node::Environment.create(:first, ["modules"], "manifests")
+        different = Puppet::Node::Environment.create(:first, ["different"], "manifests")
+        hash = {}
+
+        hash[base] = "base env"
+        hash[same] = "same env"
+        hash[different] = "different env"
+
+        expect(hash[base]).to eq("same env")
+        expect(hash[different]).to eq("different env")
+        expect(hash).to have(2).item
+      end
+
+      it "is equal when name, modules, and manifests are the same" do
+        base = Puppet::Node::Environment.create(:base, ["modules"], "manifests")
+        different_name = Puppet::Node::Environment.create(:different, base.full_modulepath, base.manifest)
+
+        expect(base).to_not eq("not an environment")
+
+        expect(base).to eq(base)
+        expect(base.hash).to eq(base.hash)
+
+        expect(base.override_with(:modulepath => ["different"])).to_not eq(base)
+        expect(base.override_with(:modulepath => ["different"]).hash).to_not eq(base.hash)
+
+        expect(base.override_with(:manifest => "different")).to_not eq(base)
+        expect(base.override_with(:manifest => "different").hash).to_not eq(base.hash)
+
+        expect(different_name).to_not eq(base)
+        expect(different_name.hash).to_not eq(base.hash)
+      end
+    end
+
+    describe "overriding an existing environment" do
+      let(:original_path) { [tmpdir('original')] }
+      let(:new_path) { [tmpdir('new')] }
+      let(:environment) { Puppet::Node::Environment.create(:overridden, original_path, 'orig.pp', '/config/script') }
+
+      it "overrides modulepath" do
+        overridden = environment.override_with(:modulepath => new_path)
+        expect(overridden).to_not be_equal(environment)
+        expect(overridden.name).to eq(:overridden)
+        expect(overridden.manifest).to eq(File.expand_path('orig.pp'))
+        expect(overridden.modulepath).to eq(new_path)
+        expect(overridden.config_version).to eq('/config/script')
+      end
+
+      it "overrides manifest" do
+        overridden = environment.override_with(:manifest => 'new.pp')
+        expect(overridden).to_not be_equal(environment)
+        expect(overridden.name).to eq(:overridden)
+        expect(overridden.manifest).to eq(File.expand_path('new.pp'))
+        expect(overridden.modulepath).to eq(original_path)
+        expect(overridden.config_version).to eq('/config/script')
+      end
+
+      it "overrides config_version" do
+        overridden = environment.override_with(:config_version => '/new/script')
+        expect(overridden).to_not be_equal(environment)
+        expect(overridden.name).to eq(:overridden)
+        expect(overridden.manifest).to eq(File.expand_path('orig.pp'))
+        expect(overridden.modulepath).to eq(original_path)
+        expect(overridden.config_version).to eq('/new/script')
+      end
+    end
+
     describe "watching a file" do
       let(:filename) { "filename" }
 
@@ -62,7 +131,6 @@ describe Puppet::Node::Environment do
       before do
         @collection = Puppet::Resource::TypeCollection.new(env)
         env.stubs(:perform_initial_import).returns(Puppet::Parser::AST::Hostclass.new(''))
-        $known_resource_types = nil
       end
 
       it "should create a resource type collection if none exists" do
@@ -86,18 +154,13 @@ describe Puppet::Node::Environment do
         env.known_resource_types.should equal(@collection)
       end
 
-      it "should return the current thread associated collection if there is one" do
-        $known_resource_types = @collection
-
-        env.known_resource_types.should equal(@collection)
-      end
-
       it "should generate a new TypeCollection if the current one requires reparsing" do
         old_type_collection = env.known_resource_types
         old_type_collection.stubs(:require_reparse?).returns true
-        $known_resource_types = nil
-        new_type_collection = env.known_resource_types
 
+        env.check_for_reparse
+
+        new_type_collection = env.known_resource_types
         new_type_collection.should be_a Puppet::Resource::TypeCollection
         new_type_collection.should_not equal(old_type_collection)
       end
@@ -124,6 +187,60 @@ describe Puppet::Node::Environment do
       end
     end
 
+    it "does not register conflicting_manifest_settings? when not using directory environments" do
+      expect(Puppet::Node::Environment.create(:directory, [], '/some/non/default/manifest.pp').conflicting_manifest_settings?).to be_false
+    end
+
+    describe "when operating in the context of directory environments" do
+      before(:each) do
+        Puppet[:environmentpath] = "$confdir/environments"
+        Puppet[:default_manifest] = "/default/manifests/site.pp"
+      end
+
+      it "has no conflicting_manifest_settings? when disable_per_environment_manifest is false" do
+        expect(Puppet::Node::Environment.create(:directory, [], '/some/non/default/manifest.pp').conflicting_manifest_settings?).to be_false
+      end
+
+      context "when disable_per_environment_manifest is true" do
+        let(:config) { mock('config') }
+        let(:global_modulepath) { ["/global/modulepath"] }
+        let(:envconf) { Puppet::Settings::EnvironmentConf.new("/some/direnv", config, global_modulepath) }
+
+        before(:each) do
+          Puppet[:disable_per_environment_manifest] = true
+        end
+
+        def assert_manifest_conflict(expectation, envconf_manifest_value)
+          config.expects(:setting).with(:manifest).returns(
+            mock('setting', :value => envconf_manifest_value)
+          )
+          environment = Puppet::Node::Environment.create(:directory, [], '/default/manifests/site.pp')
+          loader = Puppet::Environments::Static.new(environment)
+          loader.stubs(:get_conf).returns(envconf)
+
+          Puppet.override(:environments => loader) do
+            expect(environment.conflicting_manifest_settings?).to eq(expectation)
+          end
+        end
+
+        it "has conflicting_manifest_settings when environment.conf manifest was set" do
+          assert_manifest_conflict(true, '/some/envconf/manifest/site.pp')
+        end
+
+        it "does not have conflicting_manifest_settings when environment.conf manifest is empty" do
+          assert_manifest_conflict(false, '')
+        end
+
+        it "does not have conflicting_manifest_settings when environment.conf manifest is nil" do
+          assert_manifest_conflict(false, nil)
+        end
+
+        it "does not have conflicting_manifest_settings when environment.conf manifest is an exact, uninterpolated match of default_manifest" do
+          assert_manifest_conflict(false, '/default/manifests/site.pp')
+        end
+      end
+    end
+
     describe "when modeling a specific environment" do
       it "should have a method for returning the environment name" do
         Puppet::Node::Environment.new("testing").name.should == :testing
@@ -131,6 +248,20 @@ describe Puppet::Node::Environment do
 
       it "should provide an array-like accessor method for returning any environment-specific setting" do
         env.should respond_to(:[])
+      end
+
+      it "obtains its core values from the puppet settings instance as a legacy env" do
+        Puppet.settings.parse_config(<<-CONF)
+        [testing]
+        manifest = /some/manifest
+        modulepath = /some/modulepath
+        config_version = /some/script
+        CONF
+
+        env = Puppet::Node::Environment.new("testing")
+        expect(env.full_modulepath).to eq([File.expand_path('/some/modulepath')])
+        expect(env.manifest).to eq(File.expand_path('/some/manifest'))
+        expect(env.config_version).to eq('/some/script')
       end
 
       it "should ask the Puppet settings instance for the setting qualified with the environment name" do
@@ -158,7 +289,7 @@ describe Puppet::Node::Environment do
 
       it "should return nil if asked for a module that does not exist in its path" do
         modpath = tmpdir('modpath')
-        env = Puppet::Node::Environment.create(:testing, [modpath], '')
+        env = Puppet::Node::Environment.create(:testing, [modpath])
 
         env.module("one").should be_nil
       end
@@ -235,7 +366,7 @@ describe Puppet::Node::Environment do
               @first,
               :metadata => {
                 :author       => 'puppetlabs',
-                :dependencies => [{ 'name' => 'puppetlabs/bar', "version_requirement" => "3.0.0" }]
+                :dependencies => [{ 'name' => 'puppetlabs-bar', "version_requirement" => "3.0.0" }]
               }
             )
             PuppetSpec::Modules.create(
@@ -346,28 +477,6 @@ describe Puppet::Node::Environment do
       end
     end
 
-    describe Puppet::Node::Environment::Helper do
-      before do
-        @helper = Object.new
-        @helper.extend(Puppet::Node::Environment::Helper)
-      end
-
-      it "should be able to set and retrieve the environment as a symbol" do
-        @helper.environment = :foo
-        @helper.environment.name.should == :foo
-      end
-
-      it "should accept an environment directly" do
-        @helper.environment = Puppet::Node::Environment.new(:foo)
-        @helper.environment.name.should == :foo
-      end
-
-      it "should accept an environment as a string" do
-        @helper.environment = 'foo'
-        @helper.environment.name.should == :foo
-      end
-    end
-
     describe "when performing initial import" do
       def parser_and_environment(name)
         env = Puppet::Node::Environment.new(name)
@@ -412,14 +521,13 @@ describe Puppet::Node::Environment do
 
       it "should fail helpfully if there is an error importing" do
         Puppet::FileSystem.stubs(:exist?).returns true
-        env.stubs(:known_resource_types).returns Puppet::Resource::TypeCollection.new(env)
         parser, env = parser_and_environment('testing')
 
         parser.expects(:file=).once
         parser.expects(:parse).raises ArgumentError
 
         expect do
-          env.instance_eval { perform_initial_import }
+          env.known_resource_types
         end.to raise_error(Puppet::Error)
       end
 
@@ -436,12 +544,11 @@ describe Puppet::Node::Environment do
 
       it "should mark the type collection as needing a reparse when there is an error parsing" do
         parser, env = parser_and_environment('testing')
-        env.stubs(:known_resource_types).returns Puppet::Resource::TypeCollection.new(env)
 
         parser.expects(:parse).raises Puppet::ParseError.new("Syntax error at ...")
 
         expect do
-          env.instance_eval { perform_initial_import }
+          env.known_resource_types
         end.to raise_error(Puppet::Error, /Syntax error at .../)
         env.known_resource_types.require_reparse?.should be_true
       end
@@ -460,6 +567,15 @@ describe Puppet::Node::Environment do
       Puppet[:parser] = 'future'
     end
     it_behaves_like 'the environment'
+  end
+
+  describe '#current' do
+    it 'should return the current context' do
+      env = Puppet::Node::Environment.new(:test)
+      Puppet::Context.any_instance.expects(:lookup).with(:current_environment).returns(env)
+      Puppet.expects(:deprecation_warning).once
+      Puppet::Node::Environment.current.should equal(env)
+    end
   end
 
 end

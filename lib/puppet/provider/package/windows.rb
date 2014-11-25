@@ -8,7 +8,12 @@ Puppet::Type.type(:package).provide(:windows, :parent => Puppet::Provider::Packa
     This provider supports either MSI or self-extracting executable installers.
 
     This provider requires a `source` attribute when installing the package.
-    It accepts paths paths to local files, mapped drives, or UNC paths.
+    It accepts paths to local files, mapped drives, or UNC paths.
+
+    This provider supports the `install_options` and `uninstall_options`
+    attributes, which allow command-line flags to be passed to the installer.
+    These options should be specified as a string (e.g. '--flag'), a hash (e.g. {'--flag' => 'value'}),
+    or an array where each element is either a string or a hash.
 
     If the executable requires special arguments to perform a silent install or
     uninstall, then the appropriate arguments should be specified using the
@@ -93,7 +98,7 @@ Puppet::Type.type(:package).provide(:windows, :parent => Puppet::Provider::Packa
     end
   end
 
-  # This only get's called if there is a value to validate, but not if it's absent
+  # This only gets called if there is a value to validate, but not if it's absent
   def validate_source(value)
     fail("The source parameter cannot be empty when using the Windows provider.") if value.empty?
   end
@@ -104,20 +109,5 @@ Puppet::Type.type(:package).provide(:windows, :parent => Puppet::Provider::Packa
 
   def uninstall_options
     join_options(resource[:uninstall_options])
-  end
-
-  def join_options(options)
-    return unless options
-
-    options.collect do |val|
-      case val
-      when Hash
-        val.keys.sort.collect do |k|
-          "#{k}=#{val[k]}"
-        end.join(' ')
-      else
-        val
-      end
-    end
   end
 end

@@ -8,14 +8,14 @@ class Puppet::FileSystem::FileImpl
 
   def assert_path(path)
     return path if path.is_a?(Pathname)
-    # Some paths are string, or (in the case of WatchedFile, it pretends to be one by implementing to_str.
-    # (sigh).
-    #
-    unless path.is_a?(String) || path.respond_to?(:to_str)
-      raise ArgumentError, "FileSystem implementation expected Pathname, got: '#{path.class}"
+
+    # Some paths are string, or in the case of WatchedFile, it pretends to be
+    # one by implementing to_str.
+    if path.respond_to?(:to_str)
+      Pathname.new(path)
+    else
+      raise ArgumentError, "FileSystem implementation expected Pathname, got: '#{path.class}'"
     end
-    # converts String and #to_str to Pathname
-    Pathname.new(path)
   end
 
   def path_string(path)
@@ -80,7 +80,15 @@ class Puppet::FileSystem::FileImpl
   end
 
   def exist?(path)
-    File.exist?(path)
+    ::File.exist?(path)
+  end
+
+  def directory?(path)
+    ::File.directory?(path)
+  end
+
+  def file?(path)
+    ::File.file?(path)
   end
 
   def executable?(path)
@@ -97,6 +105,10 @@ class Puppet::FileSystem::FileImpl
 
   def mkpath(path)
     path.mkpath
+  end
+
+  def children(path)
+    path.children
   end
 
   def symlink(path, dest, options = {})
@@ -127,4 +139,7 @@ class Puppet::FileSystem::FileImpl
     open(path, 0, 'rb') { |this| FileUtils.compare_stream(this, stream) }
   end
 
+  def chmod(mode, path)
+    FileUtils.chmod(mode, path)
+  end
 end

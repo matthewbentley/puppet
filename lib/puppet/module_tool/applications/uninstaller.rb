@@ -10,7 +10,8 @@ module Puppet::ModuleTool
         @unfiltered  = []
         @installed   = []
         @suggestions = []
-        @environment = Puppet.lookup(:environments).get(options[:environment])
+        @environment = options[:environment_instance]
+        @ignore_changes = options[:force] || options[:ignore_changes]
       end
 
       def run
@@ -22,6 +23,7 @@ module Puppet::ModuleTool
         begin
           find_installed_module
           validate_module
+
           FileUtils.rm_rf(@installed.first.path, :secure => true)
 
           results[:affected_modules] = @installed
@@ -86,9 +88,14 @@ module Puppet::ModuleTool
       def validate_module
         mod = @installed.first
 
-        if !@options[:force] && mod.has_metadata?
-          changes = Puppet::ModuleTool::Applications::Checksummer.run(mod.path)
-          if !changes.empty?
+        unless @ignore_changes
+          changes = begin
+            Puppet::ModuleTool::Applications::Checksummer.run(mod.path)
+          rescue ArgumentError
+            []
+          end
+
+          if mod.has_metadata? && !changes.empty?
             raise LocalChangesError,
               :action            => :uninstall,
               :module_name       => (mod.forge_name || mod.name).gsub('/', '-'),

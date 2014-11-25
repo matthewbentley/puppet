@@ -46,8 +46,11 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   # Some metadata to help us compile and generally respond to the current state.
   attr_accessor :client_version, :server_version
 
-  # The environment for this catalog
+  # A String representing the environment for this catalog
   attr_accessor :environment
+
+  # The actual environment instance that was used during compilation
+  attr_accessor :environment_instance
 
   # Add classes to our class list.
   def add_class(*classes)
@@ -78,9 +81,12 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   end
 
   def add_one_resource(resource)
-    fail_on_duplicate_type_and_title(resource)
+    title_key = title_key_for_ref(resource.ref)
+    if @resource_table[title_key]
+      fail_on_duplicate_type_and_title(resource, title_key)
+    end
 
-    add_resource_to_table(resource)
+    add_resource_to_table(resource, title_key)
     create_resource_aliases(resource)
 
     resource.catalog = self if resource.respond_to?(:catalog=)
@@ -88,8 +94,7 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   end
   private :add_one_resource
 
-  def add_resource_to_table(resource)
-    title_key = title_key_for_ref(resource.ref)
+  def add_resource_to_table(resource, title_key)
     @resource_table[title_key] = resource
     @resources << title_key
   end
@@ -181,11 +186,14 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   # The relationship_graph form of the catalog. This contains all of the
   # dependency edges that are used for determining order.
   #
+  # @param given_prioritizer [Puppet::Graph::Prioritizer] The prioritization
+  #   strategy to use when constructing the relationship graph. Defaults the
+  #   being determined by the `ordering` setting.
   # @return [Puppet::Graph::RelationshipGraph]
   # @api public
-  def relationship_graph
+  def relationship_graph(given_prioritizer = nil)
     if @relationship_graph.nil?
-      @relationship_graph = Puppet::Graph::RelationshipGraph.new(prioritizer)
+      @relationship_graph = Puppet::Graph::RelationshipGraph.new(given_prioritizer || prioritizer)
       @relationship_graph.populate_from(self)
     end
     @relationship_graph
@@ -232,15 +240,17 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
     host_config
   end
 
-  def initialize(name = nil)
+  def initialize(name = nil, environment = Puppet::Node::Environment::NONE)
     super()
-    @name = name if name
+    @name = name
     @classes = []
     @resource_table = {}
     @resources = []
     @relationship_graph = nil
 
     @host_config = true
+    @environment_instance = environment
+    @environment = environment.to_s
 
     @aliases = {}
 
@@ -294,6 +304,7 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
       # Reference class canonicalizes for us.
       res = Puppet::Resource.new(nil, type)
     end
+    res.catalog = self
     title_key      = [res.type, res.title.to_s]
     uniqueness_key = [res.type, res.uniqueness_key].flatten
     @resource_table[title_key] || @resource_table[uniqueness_key]
@@ -313,8 +324,8 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
     end
   end
 
-  def self.from_pson(data)
-    result = new(data['name'])
+  def self.from_data_hash(data)
+    result = new(data['name'], Puppet::Node::Environment::NONE)
 
     if tags = data['tags']
       result.tag(*tags)
@@ -326,18 +337,29 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
 
     if environment = data['environment']
       result.environment = environment
+      result.environment_instance = Puppet::Node::Environment.remote(environment.to_sym)
     end
 
     if resources = data['resources']
       result.add_resource(*resources.collect do |res|
-        Puppet::Resource.from_pson(res)
+        Puppet::Resource.from_data_hash(res)
       end)
     end
 
     if edges = data['edges']
-      edges = PSON.parse(edges) if edges.is_a?(String)
-      edges.each do |edge|
-        edge_from_pson(result, edge)
+      edges.each do |edge_hash|
+        edge = Puppet::Relationship.from_data_hash(edge_hash)
+        unless source = result.resource(edge.source)
+          raise ArgumentError, "Could not intern from data: Could not find relationship source #{edge.source.inspect}"
+        end
+        edge.source = source
+
+        unless target = result.resource(edge.target)
+          raise ArgumentError, "Could not intern from data: Could not find relationship target #{edge.target.inspect}"
+        end
+        edge.target = target
+
+        result.add_edge(edge)
       end
     end
 
@@ -348,21 +370,9 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
     result
   end
 
-  def self.edge_from_pson(result, edge)
-    # If no type information was presented, we manually find
-    # the class.
-    edge = Puppet::Relationship.from_pson(edge) if edge.is_a?(Hash)
-    unless source = result.resource(edge.source)
-      raise ArgumentError, "Could not convert from pson: Could not find relationship source #{edge.source.inspect}"
-    end
-    edge.source = source
-
-    unless target = result.resource(edge.target)
-      raise ArgumentError, "Could not convert from pson: Could not find relationship target #{edge.target.inspect}"
-    end
-    edge.target = target
-
-    result.add_edge(edge)
+  def self.from_pson(data)
+    Puppet.deprecation_warning("from_pson is being removed in favour of from_data_hash.")
+    self.from_data_hash(data)
   end
 
   def to_data_hash
@@ -468,9 +478,9 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   end
 
   # Verify that the given resource isn't declared elsewhere.
-  def fail_on_duplicate_type_and_title(resource)
+  def fail_on_duplicate_type_and_title(resource, title_key)
     # Short-circuit the common case,
-    return unless existing_resource = @resource_table[title_key_for_ref(resource.ref)]
+    return unless existing_resource = @resource_table[title_key]
 
     # If we've gotten this far, it's a real conflict
     msg = "Duplicate declaration: #{resource.ref} is already declared"
@@ -486,10 +496,9 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   # This pretty much just converts all of the resources from one class to another, using
   # a conversion method.
   def to_catalog(convert)
-    result = self.class.new(self.name)
+    result = self.class.new(self.name, self.environment_instance)
 
     result.version = self.version
-    result.environment = self.environment
 
     map = {}
     resources.each do |resource|
@@ -540,6 +549,6 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   end
 
   def virtual_not_exported?(resource)
-    resource.respond_to?(:virtual?) and resource.virtual? and (resource.respond_to?(:exported?) and not resource.exported?)
+    resource.virtual && !resource.exported
   end
 end

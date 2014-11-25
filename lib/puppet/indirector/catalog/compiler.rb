@@ -17,13 +17,13 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
       raise ArgumentError, "Facts but no fact format provided for #{request.key}"
     end
 
-    Puppet::Util::Profiler.profile("Found facts") do
+    Puppet::Util::Profiler.profile("Found facts", [:compiler, :find_facts]) do
       # If the facts were encoded as yaml, then the param reconstitution system
       # in Network::HTTP::Handler will automagically deserialize the value.
       if text_facts.is_a?(Puppet::Node::Facts)
         facts = text_facts
       else
-        # We unescape here because the corrosponding code in Puppet::Configurer::FactHandler escapes
+        # We unescape here because the corresponding code in Puppet::Configurer::FactHandler escapes
         facts = Puppet::Node::Facts.convert_from(format, CGI.unescape(text_facts))
       end
 
@@ -32,7 +32,13 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
       end
 
       facts.add_timestamp
-      Puppet::Node::Facts.indirection.save(facts)
+
+      options = {
+        :environment => request.environment,
+        :transaction_uuid => request.options[:transaction_uuid],
+      }
+
+      Puppet::Node::Facts.indirection.save(facts, nil, options)
     end
   end
 
@@ -59,7 +65,7 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
   end
 
   def initialize
-    Puppet::Util::Profiler.profile("Setup server facts for compiling") do
+    Puppet::Util::Profiler.profile("Setup server facts for compiling", [:compiler, :init_server_facts]) do
       set_server_facts
     end
   end
@@ -84,7 +90,7 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
     config = nil
 
     benchmark(:notice, str) do
-      Puppet::Util::Profiler.profile(str) do
+      Puppet::Util::Profiler.profile(str, [:compiler, :compile, node.environment, node.name]) do
         begin
           config = Puppet::Parser::Compiler.compile(node)
         rescue Puppet::Error => detail
@@ -98,15 +104,16 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
   end
 
   # Turn our host name into a node object.
-  def find_node(name, environment)
-    Puppet::Util::Profiler.profile("Found node information") do
+  def find_node(name, environment, transaction_uuid)
+    Puppet::Util::Profiler.profile("Found node information", [:compiler, :find_node]) do
       node = nil
       begin
-        node = Puppet::Node.indirection.find(name, :environment => environment)
+        node = Puppet::Node.indirection.find(name, :environment => environment,
+                                             :transaction_uuid => transaction_uuid)
       rescue => detail
         message = "Failed when searching for node #{name}: #{detail}"
         Puppet.log_exception(detail, message)
-        raise Puppet::Error, message
+        raise Puppet::Error, message, detail.backtrace
       end
 
 
@@ -137,7 +144,7 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
     # node's catalog with only one certificate and a modification to auth.conf
     # If no key is provided we can only compile the currently connected node.
     name = request.key || request.node
-    if node = find_node(name, request.environment)
+    if node = find_node(name, request.environment, request.options[:transaction_uuid])
       return node
     end
 

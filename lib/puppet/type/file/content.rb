@@ -38,6 +38,7 @@ module Puppet
 
       ...but for larger files, this attribute is more useful when combined with the
       [template](http://docs.puppetlabs.com/references/latest/function.html#template)
+      or [file](http://docs.puppetlabs.com/references/latest/function.html#file)
       function.
     EOT
 
@@ -111,7 +112,7 @@ module Puppet
 
       if ! result and Puppet[:show_diff] and resource.show_diff?
         write_temporarily do |path|
-          notice "\n" + diff(@resource[:path], path)
+          send @resource[:loglevel], "\n" + diff(@resource[:path], path)
         end
       end
       result
@@ -126,7 +127,7 @@ module Puppet
       begin
         resource.parameter(:checksum).sum_file(resource[:path])
       rescue => detail
-        raise Puppet::Error, "Could not read #{ftype} #{@resource.title}: #{detail}"
+        raise Puppet::Error, "Could not read #{ftype} #{@resource.title}: #{detail}", detail.backtrace
       end
     end
 
@@ -206,7 +207,8 @@ module Puppet
     end
 
     def get_from_source(source_or_content, &block)
-      request = Puppet::Indirector::Request.new(:file_content, :find, source_or_content.full_path.sub(/^\//,''), nil, :environment => resource.catalog.environment)
+      source = source_or_content.metadata.source
+      request = Puppet::Indirector::Request.new(:file_content, :find, source, nil, :environment => resource.catalog.environment)
 
       request.do_request(:fileserver) do |req|
         connection = Puppet::Network::HttpPool.http_instance(req.server, req.port)
@@ -233,7 +235,7 @@ module Puppet
 
       dipper.getfile(sum)
     rescue => detail
-      fail "Could not retrieve content for #{should} from filebucket: #{detail}"
+      self.fail Puppet::Error, "Could not retrieve content for #{should} from filebucket: #{detail}", detail
     end
   end
 end

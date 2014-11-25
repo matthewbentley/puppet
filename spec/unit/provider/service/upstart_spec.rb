@@ -22,6 +22,19 @@ describe Puppet::Type.type(:service).provider(:upstart) do
     provider_class.stubs(:which).with("/sbin/initctl").returns("/sbin/initctl")
   end
 
+  it "should be the default provider on Ubuntu" do
+    Facter.expects(:value).with(:operatingsystem).returns("Ubuntu")
+    described_class.default?.should be_true
+  end
+
+  describe "excluding services" do
+    it "ignores tty and serial on Redhat systems" do
+      Facter.stubs(:value).with(:osfamily).returns('RedHat')
+      expect(described_class.excludes).to include 'serial'
+      expect(described_class.excludes).to include 'tty'
+    end
+  end
+
   describe "#instances" do
     it "should be able to find all instances" do
       lists_processes_as("rc stop/waiting\nssh start/running, process 712")
@@ -42,7 +55,13 @@ describe Puppet::Type.type(:service).provider(:upstart) do
     end
 
     it "should not find excluded services" do
-      processes = "wait-for-state stop/waiting\nportmap-wait start/running"
+      processes = "wait-for-state stop/waiting"
+      processes += "\nportmap-wait start/running"
+      processes += "\nidmapd-mounting stop/waiting"
+      processes += "\nstartpar-bridge start/running"
+      processes += "\ncryptdisks-udev stop/waiting"
+      processes += "\nstatd-mounting stop/waiting"
+      processes += "\ngssd-mounting stop/waiting"
       provider_class.stubs(:execpipe).yields(processes)
       provider_class.instances.should be_empty
     end

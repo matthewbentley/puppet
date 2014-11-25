@@ -162,12 +162,10 @@ class Puppet::Parser::Resource < Puppet::Resource
   # if we ever receive a parameter named 'tag', set
   # the resource tags with its value.
   def set_parameter(param, value = nil)
-    if ! value.nil?
+    if ! param.is_a?(Puppet::Parser::Resource::Param)
       param = Puppet::Parser::Resource::Param.new(
         :name => param, :value => value, :source => self.source
       )
-    elsif ! param.is_a?(Puppet::Parser::Resource::Param)
-      raise ArgumentError, "Received incomplete information - no value provided for parameter #{param}"
     end
 
     tag(*param.value) if param.name == :tag
@@ -180,8 +178,8 @@ class Puppet::Parser::Resource < Puppet::Resource
   def to_hash
     @parameters.inject({}) do |hash, ary|
       param = ary[1]
-      # Skip "undef" values.
-      hash[param.name] = param.value if param.value != :undef
+      # Skip "undef" and nil values.
+      hash[param.name] = param.value if param.value != :undef && !param.value.nil?
       hash
     end
   end
@@ -189,6 +187,17 @@ class Puppet::Parser::Resource < Puppet::Resource
   # Convert this resource to a RAL resource.
   def to_ral
     copy_as_resource.to_ral
+  end
+
+  # Is the receiver tagged with the given tags?
+  # This match takes into account the tags that a resource will inherit from its container
+  # but have not been set yet.
+  # It does *not* take tags set via resource defaults as these will *never* be set on
+  # the resource itself since all resources always have tags that are automatically
+  # assigned.
+  #
+  def tagged?(*tags)
+    super || ((scope_resource = scope.resource) && scope_resource != self && scope_resource.tagged?(tags))
   end
 
   private
@@ -227,7 +236,6 @@ class Puppet::Parser::Resource < Puppet::Resource
         msg += " at #{fields.join(":")}"
       end
       msg += "; cannot redefine"
-      Puppet.log_exception(ArgumentError.new(), msg)
       raise Puppet::ParseError.new(msg, param.line, param.file)
     end
 
@@ -253,7 +261,7 @@ class Puppet::Parser::Resource < Puppet::Resource
       validate_parameter(name)
     end
   rescue => detail
-    fail Puppet::ParseError, detail.to_s
+    self.fail Puppet::ParseError, detail.to_s + " on #{self}", detail
   end
 
   def extract_parameters(params)

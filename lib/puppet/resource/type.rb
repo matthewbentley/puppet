@@ -33,6 +33,11 @@ class Puppet::Resource::Type
   attr_accessor :file, :line, :doc, :code, :ruby_code, :parent, :resource_type_collection
   attr_reader :namespace, :arguments, :behaves_like, :module_name
 
+  # Map from argument (aka parameter) names to Puppet Type
+  # @return [Hash<Symbol, Puppet::Pops::Types::PAnyType] map from name to type
+  #
+  attr_reader :argument_types
+
   # This should probably be renamed to 'kind' eventually, in accordance with the changes
   #  made for serialization and API usability (#14137).  At the moment that seems like
   #  it would touch a whole lot of places in the code, though.  --cprice 2012-04-23
@@ -46,7 +51,7 @@ class Puppet::Resource::Type
   extend Puppet::Indirector
   indirects :resource_type, :terminus_class => :parser
 
-  def self.from_pson(data)
+  def self.from_data_hash(data)
     name = data.delete('name') or raise ArgumentError, "Resource Type names must be specified"
     kind = data.delete('kind') || "definition"
 
@@ -63,8 +68,9 @@ class Puppet::Resource::Type
     new(type, name, data)
   end
 
-  def to_pson(*args)
-    to_data_hash.to_pson(*args)
+  def self.from_pson(data)
+    Puppet.deprecation_warning("from_pson is being removed in favour of from_data_hash.")
+    self.from_data_hash(data)
   end
 
   def to_data_hash
@@ -139,6 +145,7 @@ class Puppet::Resource::Type
     end
 
     set_arguments(options[:arguments])
+    set_argument_types(options[:argument_types])
 
     @match = nil
 
@@ -323,6 +330,27 @@ class Puppet::Resource::Type
       arg = arg.to_s
       warn_if_metaparam(arg, default)
       @arguments[arg] = default
+    end
+  end
+
+  # Sets the argument name to Puppet Type hash used for type checking.
+  # Names must correspond to available arguments (they must be defined first).
+  # Arguments not mentioned will not be type-checked. Only supported when parser == "future"
+  #
+  def set_argument_types(name_to_type_hash)
+    @argument_types = {}
+    # Stop here if not running under future parser, the rest requires pops to be initialized
+    # and that the type system is available
+    return unless Puppet[:parser] == 'future' && name_to_type_hash
+    name_to_type_hash.each do |name, t|
+      # catch internal errors
+      unless @arguments.include?(name)
+        raise Puppet::DevError, "Parameter '#{name}' is given a type, but is not a valid parameter."
+      end
+      unless t.is_a? Puppet::Pops::Types::PAnyType
+        raise Puppet::DevError, "Parameter '#{name}' is given a type that is not a Puppet Type, got #{t.class}"
+      end
+      @argument_types[name] = t
     end
   end
 

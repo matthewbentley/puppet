@@ -171,8 +171,7 @@ end
 
     # overridden so that we match with self.should
     def insync?(is)
-      return true unless is
-      is = [] if is == :absent
+      is = [] if !is || is == :absent
       is.sort == self.should.sort
     end
   end
@@ -228,8 +227,7 @@ end
 
     # overridden so that we match with self.should
     def insync?(is)
-      return true unless is
-      is = [] if is == :absent
+      is = [] if !is || is == :absent
       is.sort == self.should.sort
     end
 
@@ -250,8 +248,7 @@ end
 
     # overridden so that we match with self.should
     def insync?(is)
-      return true unless is
-      is = [] if is == :absent
+      is = [] if !is || is == :absent
       is.sort == self.should.sort
     end
 
@@ -330,7 +327,7 @@ end
   def validate_ip(ip, name)
     IPAddr.new(ip) if ip
   rescue ArgumentError
-    self.fail "'#{ip}' is an invalid #{name}"
+    self.fail Puppet::Error, "'#{ip}' is an invalid #{name}", $!
   end
 
   def validate_exclusive(interface, address, router)

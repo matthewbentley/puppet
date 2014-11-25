@@ -7,7 +7,6 @@ require 'puppet/ssl/certificate_authority'
 describe Puppet::SSL::CertificateAuthority do
   after do
     Puppet::SSL::CertificateAuthority.instance_variable_set(:@singleton_instance, nil)
-    Puppet.settings.clearused
   end
 
   def stub_ca_host
@@ -937,10 +936,34 @@ describe Puppet::SSL::CertificateAuthority do
         cert = stub 'cert', :content => real_cert
         Puppet::SSL::Certificate.indirection.expects(:find).with("host").returns nil
 
-        @ca.inventory.expects(:serial).with("host").returns 16
+        @ca.inventory.expects(:serials).with("host").returns [16]
 
         @ca.crl.expects(:revoke).with { |serial, key| serial == 16 }
         @ca.revoke('host')
+      end
+
+      it "should revoke all serials matching a name" do
+        real_cert = stub 'real_cert', :serial => 15
+        cert = stub 'cert', :content => real_cert
+        Puppet::SSL::Certificate.indirection.expects(:find).with("host").returns nil
+
+        @ca.inventory.expects(:serials).with("host").returns [16, 20, 25]
+
+        @ca.crl.expects(:revoke).with { |serial, key| serial == 16 }
+        @ca.crl.expects(:revoke).with { |serial, key| serial == 20 }
+        @ca.crl.expects(:revoke).with { |serial, key| serial == 25 }
+        @ca.revoke('host')
+      end
+
+      it "should raise an error if no certificate match" do
+        real_cert = stub 'real_cert', :serial => 15
+        cert = stub 'cert', :content => real_cert
+        Puppet::SSL::Certificate.indirection.expects(:find).with("host").returns nil
+
+        @ca.inventory.expects(:serials).with("host").returns []
+
+        @ca.crl.expects(:revoke).never
+        expect { @ca.revoke('host') }.to raise_error
       end
 
       context "revocation by serial number (#16798)" do
@@ -960,7 +983,9 @@ describe Puppet::SSL::CertificateAuthority do
 
         it "handles very large serial numbers" do
           bighex = '0x4000000000000000000000000000000000000000'
-          @ca.crl.expects(:revoke).with { |serial, key| serial == 2**(159-1) }
+          bighex_int = 365375409332725729550921208179070754913983135744
+
+          @ca.crl.expects(:revoke).with(bighex_int, anything)
           Puppet::SSL::Certificate.indirection.expects(:find).with(bighex).returns nil
 
           @ca.revoke(bighex)
@@ -976,6 +1001,7 @@ end
 
 require 'puppet/indirector/memory'
 
+module CertificateAuthorityGenerateSpecs
 describe "CertificateAuthority.generate" do
 
   def expect_to_increment_serial_file
@@ -1100,4 +1126,5 @@ describe "CertificateAuthority.generate" do
       end
     end
   end
+end
 end

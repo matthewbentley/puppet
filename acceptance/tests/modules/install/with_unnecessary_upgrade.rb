@@ -4,7 +4,7 @@ extend Puppet::Acceptance::ModuleUtils
 
 module_author = "pmtacceptance"
 module_name   = "java"
-module_dependencies   = ["stdlib"]
+module_dependencies   = ["stdlub"]
 
 orig_installed_modules = get_installed_modules_for_hosts hosts
 teardown do
@@ -12,6 +12,8 @@ teardown do
 end
 
 step 'Setup'
+
+default_moduledir = get_default_modulepath_for_host(master)
 
 stub_forge_on(master)
 
@@ -21,7 +23,7 @@ on master, puppet("module install #{module_author}-#{module_name} --version #{mo
   assert_match(/#{module_author}-#{module_name} \(.*v#{module_version}.*\)/, stdout,
         "Notice of specific version installed was not displayed")
 end
-on master, "grep \"version '#{module_version}'\" #{master['distmoduledir']}/#{module_name}/Modulefile"
+on master, "grep \"version '#{module_version}'\" #{default_moduledir}/#{module_name}/Modulefile"
 
 
 step "Install a module that depends on a dependency that could be upgraded, but already satisfies constraints"
@@ -30,7 +32,7 @@ on master, puppet("module install #{module_author}-#{module_name}") do
   assert_module_installed_ui(stdout, module_author, module_name)
 end
 
-on master, puppet("module list --modulepath #{master['distmoduledir']}") do
+on master, puppet("module list --modulepath #{default_moduledir}") do
   module_name   = "java"
   assert_module_installed_ui(stdout, module_author, module_name, module_version, '==')
 end

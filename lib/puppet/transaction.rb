@@ -47,6 +47,33 @@ class Puppet::Transaction
     @prefetched_providers = Hash.new { |h,k| h[k] = {} }
   end
 
+  # Invoke the pre_run_check hook in every resource in the catalog.
+  # This should (only) be called by Transaction#evaluate before applying
+  # the catalog.
+  #
+  # @see Puppet::Transaction#evaluate
+  # @see Puppet::Type#pre_run_check
+  # @raise [Puppet::Error] If any pre-run checks failed.
+  # @return [void]
+  def perform_pre_run_checks
+    prerun_errors = {}
+
+    @catalog.vertices.each do |res|
+      begin
+        res.pre_run_check
+      rescue Puppet::Error => detail
+        prerun_errors[res] = detail
+      end
+    end
+
+    unless prerun_errors.empty?
+      prerun_errors.each do |res, detail|
+        res.log_exception(detail)
+      end
+      raise Puppet::Error, "Some pre-run checks failed"
+    end
+  end
+
   # This method does all the actual work of running a transaction.  It
   # collects all of the changes, executes them, and responds to any
   # necessary events.
@@ -54,6 +81,8 @@ class Puppet::Transaction
     block ||= method(:eval_resource)
     generator = AdditionalResourceGenerator.new(@catalog, relationship_graph, @prioritizer)
     @catalog.vertices.each { |resource| generator.generate_additional_resources(resource) }
+
+    perform_pre_run_checks
 
     Puppet.info "Applying configuration version '#{catalog.version}'" if catalog.version
 
@@ -76,6 +105,7 @@ class Puppet::Transaction
     overly_deferred_resource_handler = lambda do |resource|
       # We don't automatically assign unsuitable providers, so if there
       # is one, it must have been selected by the user.
+      return if missing_tags?(resource)
       if resource.provider
         resource.err "Provider #{resource.provider.class.name} is not functional on this host"
       else
@@ -138,7 +168,7 @@ class Puppet::Transaction
   end
 
   def relationship_graph
-    catalog.relationship_graph
+    catalog.relationship_graph(@prioritizer)
   end
 
   def resource_status(resource)

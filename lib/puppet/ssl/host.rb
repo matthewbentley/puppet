@@ -118,12 +118,17 @@ DOC
     indirection.destroy(name)
   end
 
-  def self.from_pson(pson)
-    instance = new(pson["name"])
-    if pson["desired_state"]
-      instance.desired_state = pson["desired_state"]
+  def self.from_data_hash(data)
+    instance = new(data["name"])
+    if data["desired_state"]
+      instance.desired_state = data["desired_state"]
     end
     instance
+  end
+
+  def self.from_pson(pson)
+    Puppet.deprecation_warning("from_pson is being removed in favour of from_data_hash.")
+    self.from_data_hash(pson)
   end
 
   # Puppet::SSL::Host is actually indirected now so the original implementation
@@ -198,7 +203,7 @@ DOC
 
       # get the CA cert first, since it's required for the normal cert
       # to be of any use.
-      return nil unless Certificate.indirection.find("ca") unless ca?
+      return nil unless Certificate.indirection.find("ca", :fail_on_404 => true) unless ca?
       return nil unless @certificate = Certificate.indirection.find(name)
 
       validate_certificate_with_key
@@ -217,8 +222,9 @@ To fix this, remove the certificate from both the master and the agent and then 
 On the master:
   puppet cert clean #{Puppet[:certname]}
 On the agent:
-  rm -f #{Puppet[:hostcert]}
-  puppet agent -t
+  1a. On most platforms: find #{Puppet[:ssldir]} -name #{Puppet[:certname]}.pem -delete
+  1b. On Windows: del "#{Puppet[:ssldir]}/#{Puppet[:certname]}.pem" /f
+  2. puppet agent -t
 ERROR_STRING
     end
   end
@@ -305,10 +311,6 @@ ERROR_STRING
     result[:dns_alt_names] = thing_to_use.subject_alt_names
 
     result
-  end
-
-  def to_pson(*args)
-    to_data_hash.to_pson(*args)
   end
 
   # eventually we'll probably want to move this somewhere else or make it

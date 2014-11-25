@@ -3,7 +3,7 @@ module Puppet::FileSystem
   require 'puppet/file_system/file_impl'
   require 'puppet/file_system/memory_file'
   require 'puppet/file_system/memory_impl'
-  require 'puppet/file_system/tempfile'
+  require 'puppet/file_system/uniquefile'
 
   # create instance of the file system implementation to use for the current platform
   @impl = if RUBY_VERSION =~ /^1\.8/
@@ -148,6 +148,24 @@ module Puppet::FileSystem
     @impl.exist?(assert_path(path))
   end
 
+  # Determines if a file is a directory.
+  #
+  # @return [Boolean] true if the given file is a directory.
+  #
+  # @api public
+  def self.directory?(path)
+    @impl.directory?(assert_path(path))
+  end
+
+  # Determines if a file is a file.
+  #
+  # @return [Boolean] true if the given file is a file.
+  #
+  # @api public
+  def self.file?(path)
+    @impl.file?(assert_path(path))
+  end
+
   # Determines if a file is executable.
   #
   # @todo Should this take into account extensions on the windows platform?
@@ -184,6 +202,13 @@ module Puppet::FileSystem
     @impl.mkpath(assert_path(path))
   end
 
+  # @return [Array<Object>] references to all of the children of the given
+  #   directory path, excluding `.` and `..`.
+  # @api public
+  def self.children(path)
+    @impl.children(assert_path(path))
+  end
+
   # Creates a symbolic link dest which points to the current file.
   # If dest already exists:
   #
@@ -216,7 +241,7 @@ module Puppet::FileSystem
   end
 
   # @return [Boolean] true if the file is a symbolic link.
-  # 
+  #
   # @api public
   #
   def self.symlink?(path)
@@ -285,6 +310,7 @@ module Puppet::FileSystem
   # objects. The produced "handle" should be used in all other operations
   # that take a "path". No operation should be directly invoked on the returned opaque object
   #
+  # @param path [String] The string representation of the path
   # @return [Object] An opaque path handle on which no operations should be directly performed
   #
   # @api public
@@ -305,6 +331,7 @@ module Puppet::FileSystem
 
   # Produces a string representation of the opaque path handle.
   #
+  # @param path [Object] a path handle produced by {#pathname}
   # @return [String] a string representation of the path
   #
   def self.path_string(path)
@@ -321,5 +348,19 @@ module Puppet::FileSystem
   #
   def self.exclusive_create(path, mode, &block)
     @impl.exclusive_create(assert_path(path), mode, &block)
+  end
+
+  # Changes permission bits on the named path to the bit pattern represented
+  # by mode.
+  #
+  # @param mode [Integer] The mode to apply to the file if it is created
+  # @param path [String] The path to the file, can also accept [PathName]
+  #
+  # @raise [Errno::ENOENT]: path doesn't exist
+  #
+  # @api public
+  #
+  def self.chmod(mode, path)
+    @impl.chmod(mode, path)
   end
 end

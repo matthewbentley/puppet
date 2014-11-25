@@ -46,7 +46,7 @@ module PSON
       string.gsub!(/["\\\x0-\x1f]/) { MAP[$MATCH] }
       string
     rescue => e
-      raise GeneratorError, "Caught #{e.class}: #{e}"
+      raise GeneratorError, "Caught #{e.class}: #{e}", e.backtrace
     end
   else
     def utf8_to_pson(string) # :nodoc:
@@ -321,14 +321,7 @@ module PSON
         module Float
           # Returns a PSON string representation for this Float number.
           def to_pson(state = nil, *)
-            case
-            when infinite?
-              if !state || state.allow_nan?
-                to_s
-              else
-                raise GeneratorError, "#{self} not allowed in PSON"
-              end
-            when nan?
+            if infinite? || nan?
               if !state || state.allow_nan?
                 to_s
               else

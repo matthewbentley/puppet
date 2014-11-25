@@ -28,7 +28,7 @@ class Puppet::Network::HTTP::RackREST
 
   def initialize(args={})
     super()
-    register(Puppet::Network::HTTP::API::V2.routes + Puppet::Network::HTTP::API::V1.routes)
+    register([Puppet::Network::HTTP::API::V2.routes, Puppet::Network::HTTP::API::V1.routes])
   end
 
   def set_content_type(response, format)
@@ -94,7 +94,9 @@ class Puppet::Network::HTTP::RackREST
     if cert.nil? || cert.empty?
       nil
     else
-      Puppet::SSL::Certificate.from_instance(OpenSSL::X509::Certificate.new(cert))
+      cert = Puppet::SSL::Certificate.from_instance(OpenSSL::X509::Certificate.new(cert))
+      warn_if_near_expiration(cert)
+      cert
     end
   end
 

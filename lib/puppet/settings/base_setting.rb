@@ -3,7 +3,7 @@ require 'puppet/settings/errors'
 # The base setting type
 class Puppet::Settings::BaseSetting
   attr_accessor :name, :desc, :section, :default, :call_on_define, :call_hook
-  attr_reader :short
+  attr_reader :short, :deprecated
 
   def self.available_call_hook_values
     [:on_define_and_write, :on_initialize_and_write, :on_write_only]
@@ -122,6 +122,9 @@ class Puppet::Settings::BaseSetting
   end
 
   def default(check_application_defaults_first = false)
+    if @default.is_a? Proc
+      @default = @default.call
+    end
     return @default unless check_application_defaults_first
     return @settings.value(name, :application_defaults, true) || @default
   end
@@ -152,9 +155,12 @@ class Puppet::Settings::BaseSetting
     str.gsub(/^/, "    ")
   end
 
-  # Retrieves the value, or if it's not set, retrieves the default.
-  def value
-    @settings.value(self.name)
+  # @param bypass_interpolation [Boolean] Set this true to skip the
+  #   interpolation step, returning the raw setting value.  Defaults to false.
+  # @return [String] Retrieves the value, or if it's not set, retrieves the default.
+  # @api public
+  def value(bypass_interpolation = false)
+    @settings.value(self.name, nil, bypass_interpolation)
   end
 
   # Modify the value when it is first evaluated
@@ -164,5 +170,26 @@ class Puppet::Settings::BaseSetting
 
   def set_meta(meta)
     Puppet.notice("#{name} does not support meta data. Ignoring.")
+  end
+
+  def deprecated=(deprecation)
+    raise(ArgumentError, "'#{deprecation}' is an unknown setting deprecation state.  Must be either :completely or :allowed_on_commandline") unless [:completely, :allowed_on_commandline].include?(deprecation)
+    @deprecated = deprecation
+  end
+
+  def deprecated?
+    !!@deprecated
+  end
+
+  # True if we should raise a deprecation_warning if the setting is submitted
+  # on the commandline or is set in puppet.conf.
+  def completely_deprecated?
+    @deprecated == :completely
+  end
+
+  # True if we should raise a deprecation_warning if the setting is found in
+  # puppet.conf, but not if the user sets it on the commandline
+  def allowed_on_commandline?
+    @deprecated == :allowed_on_commandline
   end
 end

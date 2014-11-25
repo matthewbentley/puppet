@@ -3,7 +3,6 @@ require 'spec_helper'
 
 require 'puppet/parser/type_loader'
 require 'puppet/parser/parser_factory'
-require 'puppet/parser/e_parser_adapter'
 require 'puppet_spec/modules'
 require 'puppet_spec/files'
 
@@ -17,10 +16,6 @@ describe Puppet::Parser::TypeLoader do
   it "should support an environment" do
     loader = Puppet::Parser::TypeLoader.new(:myenv)
     loader.environment.name.should == :myenv
-  end
-
-  it "should include the Environment Helper" do
-    loader.class.ancestors.should be_include(Puppet::Node::Environment::Helper)
   end
 
   it "should delegate its known resource types to its environment" do

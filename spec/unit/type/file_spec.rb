@@ -418,7 +418,7 @@ describe Puppet::Type.type(:file) do
     it "should not copy values to the child which were set by the source" do
       source = File.expand_path(__FILE__)
       file[:source] = source
-      metadata = stub 'metadata', :owner => "root", :group => "root", :mode => 0755, :ftype => "file", :checksum => "{md5}whatever", :source => source
+      metadata = stub 'metadata', :owner => "root", :group => "root", :mode => '0755', :ftype => "file", :checksum => "{md5}whatever", :source => source
       file.parameter(:source).stubs(:metadata).returns metadata
 
       file.parameter(:source).copy_source_values
@@ -664,7 +664,7 @@ describe Puppet::Type.type(:file) do
     end
   end
 
-  describe "#recurse_remote" do
+  describe "#recurse_remote", :uses_checksums => true do
     let(:my) { File.expand_path('/my') }
 
     before do
@@ -722,12 +722,14 @@ describe Puppet::Type.type(:file) do
 
     # LAK:FIXME This is a bug, but I can't think of a fix for it.  Fortunately it's already
     # filed, and when it's fixed, we'll just fix the whole flow.
-    it "should set the checksum type to :md5 if the remote file is a file" do
-      @first.stubs(:ftype).returns "file"
-      file.stubs(:perform_recursion).returns [@first]
-      @resource.stubs(:[]=)
-      @resource.expects(:[]=).with(:checksum, :md5)
-      file.recurse_remote("first" => @resource)
+    with_digest_algorithms do
+      it "it should set the checksum type to #{metadata[:digest_algorithm]} if the remote file is a file" do
+        @first.stubs(:ftype).returns "file"
+        file.stubs(:perform_recursion).returns [@first]
+        @resource.stubs(:[]=)
+        @resource.expects(:[]=).with(:checksum, digest_algorithm.intern)
+        file.recurse_remote("first" => @resource)
+      end
     end
 
     it "should store the metadata in the source property for each resource so the source does not have to requery the metadata" do
@@ -1355,13 +1357,13 @@ describe Puppet::Type.type(:file) do
       target = described_class.new(
         :ensure => :file, :path => @target,
         :catalog => catalog, :content => 'yayness',
-        :mode => 0644)
+        :mode => '0644')
       catalog.add_resource target
 
       @link_resource = described_class.new(
         :ensure => :link, :path => @link,
         :target => @target, :catalog => catalog,
-        :mode => 0755)
+        :mode => '0755')
       catalog.add_resource @link_resource
 
       # to prevent the catalog from trying to write state.yaml

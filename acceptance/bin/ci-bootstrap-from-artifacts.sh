@@ -12,9 +12,9 @@
 
 set -x
 
-# Use our internal rubygems mirror for the bundle install
+# If $GEM_SOURCE is not set, fall back to rubygems.org
 if [ -z $GEM_SOURCE ]; then
-  export GEM_SOURCE='http://rubygems.delivery.puppetlabs.net'
+  export GEM_SOURCE='https://rubygems.org'
 fi
 
 echo "SHA: ${SHA}"
@@ -34,6 +34,11 @@ bundle install --without=development --path=.bundle/gems
 
 if [[ "${platform}" =~ 'solaris' ]]; then
   repo_proxy="  :repo_proxy => false,"
+fi
+
+# If the platform is Windows and $ruby_arch is set, append it
+if [[ "${platform}" =~ 'win' && ! -z $ruby_arch ]]; then
+    platform="${platform}-${ruby_arch}"
 fi
 
 cat > local_options.rb <<-EOF

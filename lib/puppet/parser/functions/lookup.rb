@@ -89,14 +89,14 @@ returns the bound value with the given name after having  asserted it has the de
     lookup('the_name')
 
 When called with two arguments; **the name**, and **the expected type**, it
-returns the the bound value with the given name after having asserted it has the given data
+returns the bound value with the given name after having asserted it has the given data
 type ('String' in the example):
 
     lookup('the_name', 'String') # 3.x
     lookup('the_name', String)   # parser future
 
 When called with three arguments, **the name**, the **expected type**, and a **default**, it
-returns the the bound value with the given name, or the default after having asserted the value
+returns the bound value with the given name, or the default after having asserted the value
 has the given data type (`String` in the example above):
 
     lookup('the_name', 'String', 'Fred') # 3x
@@ -138,7 +138,7 @@ If you want to make lookup return undef when no value was found instead of raisi
 ENDHEREDOC
 
   unless Puppet[:binder] || Puppet[:parser] == 'future'
-    raise Puppet::ParseError, "The lookup function is only available with settings --binder true, or --parser future" 
+    raise Puppet::ParseError, "The lookup function is only available with settings --binder true, or --parser future"
   end
   Puppet::Pops::Binder::Lookup.lookup(self, args)
 end

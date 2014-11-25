@@ -7,9 +7,13 @@ class Puppet::Network::HTTP::WEBrickREST < WEBrick::HTTPServlet::AbstractServlet
 
   include Puppet::Network::HTTP::Handler
 
+  def self.mutex
+    @mutex ||= Mutex.new
+  end
+
   def initialize(server)
     raise ArgumentError, "server is required" unless server
-    register(Puppet::Network::HTTP::API::V2.routes + Puppet::Network::HTTP::API::V1.routes)
+    register([Puppet::Network::HTTP::API::V2.routes, Puppet::Network::HTTP::API::V1.routes])
     super(server)
   end
 
@@ -26,9 +30,12 @@ class Puppet::Network::HTTP::WEBrickREST < WEBrick::HTTPServlet::AbstractServlet
     params.merge(client_information(request))
   end
 
-  # WEBrick uses a service method to respond to requests.  Simply delegate to the handler response method.
+  # WEBrick uses a service method to respond to requests.  Simply delegate to
+  # the handler response method.
   def service(request, response)
-    process(request, response)
+    self.class.mutex.synchronize do
+      process(request, response)
+    end
   end
 
   def headers(request)
@@ -53,7 +60,9 @@ class Puppet::Network::HTTP::WEBrickREST < WEBrick::HTTPServlet::AbstractServlet
 
   def client_cert(request)
     if cert = request.client_cert
-      Puppet::SSL::Certificate.from_instance(cert)
+      cert = Puppet::SSL::Certificate.from_instance(cert)
+      warn_if_near_expiration(cert)
+      cert
     else
       nil
     end
@@ -70,7 +79,6 @@ class Puppet::Network::HTTP::WEBrickREST < WEBrick::HTTPServlet::AbstractServlet
       response.body = result
       response["content-length"] = result.stat.size if result.is_a?(File)
     end
-    response.reason_phrase = result if status < 200 or status >= 300
   end
 
   # Retrieve node/cert/ip information from the request object.

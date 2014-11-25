@@ -39,23 +39,85 @@ describe "Two step scoping for variables" do
       Puppet[:parser] = 'future'
     end
 
-    describe "using plussignment to change in a new scope" do
-      it "does not change a string in the parent scope" do
-        # Expects to be able to concatenate string using +=
+    describe "using unsupported operators" do
+      it "issues an error for +=" do
         expect do
-          catalog = compile_to_catalog(<<-MANIFEST, Puppet::Node.new('the node'))
-              $var = "top_msg"
-              class override {
-                $var += "override"
-                include foo
+          catalog = compile_to_catalog(<<-MANIFEST)
+              $var = ["top_msg"]
+              node default {
+                $var += ["override"]
               }
-              class foo {
-                notify { 'something': message => $var, }
-              }
-
-              include override
             MANIFEST
-        end.to raise_error(/The value 'top_msg' cannot be converted to Numeric/)
+        end.to raise_error(/The operator '\+=' is no longer supported/)
+      end
+
+      it "issues an error for -=" do
+        expect do
+          catalog = compile_to_catalog(<<-MANIFEST)
+              $var = ["top_msg"]
+              node default {
+                $var -= ["top_msg"]
+              }
+            MANIFEST
+        end.to raise_error(/The operator '-=' is no longer supported/)
+      end
+    end
+
+    it "when using a template ignores the dynamic value of the var when using the @varname syntax" do
+      expect_the_message_to_be('node_msg') do <<-MANIFEST
+          node default {
+            $var = "node_msg"
+            include foo
+          }
+          class foo {
+            $var = "foo_msg"
+            include bar
+          }
+          class bar {
+            notify { 'something': message => inline_template("<%= @var %>"), }
+          }
+        MANIFEST
+      end
+    end
+
+    it "when using a template gets the var from an inherited class when using the @varname syntax" do
+      expect_the_message_to_be('Barbamama') do <<-MANIFEST
+          node default {
+            $var = "node_msg"
+            include bar_bamama
+            include foo
+          }
+          class bar_bamama {
+            $var = "Barbamama"
+          }
+          class foo {
+            $var = "foo_msg"
+            include bar
+          }
+          class bar inherits bar_bamama {
+            notify { 'something': message => inline_template("<%= @var %>"), }
+          }
+        MANIFEST
+      end
+    end
+
+    it "when using a template ignores the dynamic var when it is not present in an inherited class" do
+      expect_the_message_to_be('node_msg') do <<-MANIFEST
+          node default {
+            $var = "node_msg"
+            include bar_bamama
+            include foo
+          }
+          class bar_bamama {
+          }
+          class foo {
+            $var = "foo_msg"
+            include bar
+          }
+          class bar inherits bar_bamama {
+            notify { 'something': message => inline_template("<%= @var %>"), }
+          }
+        MANIFEST
       end
     end
   end
@@ -126,54 +188,6 @@ describe "Two step scoping for variables" do
     end
 
     describe "when using shadowing and inheritance" do
-      it "finds value define in the inherited node" do
-        expect_the_message_to_be('parent_msg') do <<-MANIFEST
-            $var = "top_msg"
-            node parent {
-              $var = "parent_msg"
-            }
-            node default inherits parent {
-              include foo
-            }
-            class foo {
-              notify { 'something': message => $var, }
-            }
-          MANIFEST
-        end
-      end
-
-      it "finds top scope when the class is included before the node defines the var" do
-        expect_the_message_to_be('top_msg') do <<-MANIFEST
-            $var = "top_msg"
-            node parent {
-              include foo
-            }
-            node default inherits parent {
-              $var = "default_msg"
-            }
-            class foo {
-              notify { 'something': message => $var, }
-            }
-          MANIFEST
-        end
-      end
-
-      it "finds top scope when the class is included before the node defines the var" do
-        expect_the_message_to_be('top_msg') do <<-MANIFEST
-            $var = "top_msg"
-            node parent {
-              include foo
-            }
-            node default inherits parent {
-              $var = "default_msg"
-            }
-            class foo {
-              notify { 'something': message => $var, }
-            }
-          MANIFEST
-        end
-      end
-
       it "finds values in its local scope" do
         expect_the_message_to_be('local_msg') do <<-MANIFEST
             node default {
@@ -305,7 +319,7 @@ describe "Two step scoping for variables" do
                 $var = "inner baz"
               }
 
-              class bar inherits baz {
+              class bar inherits foo::baz {
                 notify { 'something': message => $var, }
               }
             }
@@ -574,77 +588,20 @@ describe "Two step scoping for variables" do
           MANIFEST
         end
       end
-    end
 
-    describe "using plussignment to change in a new scope" do
-
-      it "does not change an array in the parent scope" do
-        expect_the_message_to_be('top_msg') do <<-MANIFEST
-            $var = ["top_msg"]
-            class override {
-              $var += ["override"]
+      it "when using a template ignores the dynamic value of the var when using scope.lookupvar" do
+        expect_the_message_to_be('node_msg') do <<-MANIFEST
+            node default {
+              $var = "node_msg"
               include foo
             }
             class foo {
-              notify { 'something': message => $var, }
+              $var = "foo_msg"
+              include bar
             }
-
-            include override
-          MANIFEST
-        end
-      end
-
-      it "concatenates two arrays" do
-        expect_the_message_to_be(['top_msg', 'override']) do <<-MANIFEST
-            $var = ["top_msg"]
-            class override {
-              $var += ["override"]
-              notify { 'something': message => $var, }
+            class bar {
+              notify { 'something': message => inline_template("<%= scope.lookupvar('var') %>"), }
             }
-
-            include override
-          MANIFEST
-        end
-      end
-
-      it "leaves an array of arrays unflattened" do
-        expect_the_message_to_be([['top_msg'], ['override']]) do <<-MANIFEST
-            $var = [["top_msg"]]
-            class override {
-              $var += [["override"]]
-              notify { 'something': message => $var, }
-            }
-
-            include override
-          MANIFEST
-        end
-      end
-
-      it "does not change a hash in the parent scope" do
-        expect_the_message_to_be({"key"=>"top_msg"}) do <<-MANIFEST
-            $var = { "key" => "top_msg" }
-            class override {
-              $var += { "other" => "override" }
-              include foo
-            }
-            class foo {
-              notify { 'something': message => $var, }
-            }
-
-            include override
-          MANIFEST
-        end
-      end
-
-      it "replaces a value of a key in the hash instead of merging the values" do
-        expect_the_message_to_be({"key"=>"override"}) do <<-MANIFEST
-            $var = { "key" => "top_msg" }
-            class override {
-              $var += { "key" => "override" }
-              notify { 'something': message => $var, }
-            }
-
-            include override
           MANIFEST
         end
       end
@@ -682,20 +639,16 @@ describe "Two step scoping for variables" do
         end
       end
 
-      it "evaluates enc classes in the node scope when there is a matching node" do
-        enc_node = Puppet::Node.new("the_node", { :classes => ['foo'] })
+      it "overrides enc variables from a node scope var" do
+        enc_node = Puppet::Node.new("the_node", { :classes => ['foo'], :parameters => { 'enc_var' => 'Set from ENC.' } })
 
-        expect_the_message_to_be('from matching node', enc_node) do <<-MANIFEST
-            node inherited {
-              $var = "from inherited"
-            }
-
-            node the_node inherits inherited {
-              $var = "from matching node"
+        expect_the_message_to_be('ENC overridden in node', enc_node) do <<-MANIFEST
+            node the_node {
+              $enc_var = "ENC overridden in node"
             }
 
             class foo {
-              notify { 'something': message => $var, }
+              notify { 'something': message => $enc_var, }
             }
           MANIFEST
         end
@@ -707,7 +660,74 @@ describe "Two step scoping for variables" do
     before :each do
       Puppet[:parser] = 'current'
     end
-    it_behaves_like 'the scope' do
+
+    it_behaves_like 'the scope'
+
+    it "finds value define in the inherited node" do
+      expect_the_message_to_be('parent_msg') do <<-MANIFEST
+          $var = "top_msg"
+          node parent {
+            $var = "parent_msg"
+          }
+          node default inherits parent {
+            include foo
+          }
+          class foo {
+            notify { 'something': message => $var, }
+          }
+        MANIFEST
+      end
+    end
+
+    it "finds top scope when the class is included before the node defines the var" do
+      expect_the_message_to_be('top_msg') do <<-MANIFEST
+          $var = "top_msg"
+          node parent {
+            include foo
+          }
+          node default inherits parent {
+            $var = "default_msg"
+          }
+          class foo {
+            notify { 'something': message => $var, }
+          }
+        MANIFEST
+      end
+    end
+
+    it "finds top scope when the class is included before the node defines the var" do
+      expect_the_message_to_be('top_msg') do <<-MANIFEST
+          $var = "top_msg"
+          node parent {
+            include foo
+          }
+          node default inherits parent {
+            $var = "default_msg"
+          }
+          class foo {
+            notify { 'something': message => $var, }
+          }
+        MANIFEST
+      end
+    end
+
+    it "evaluates enc classes in the node scope when there is a matching node" do
+      enc_node = Puppet::Node.new("the_node", { :classes => ['foo'] })
+
+      expect_the_message_to_be('from matching node', enc_node) do <<-MANIFEST
+          node inherited {
+            $var = "from inherited"
+          }
+
+          node the_node inherits inherited {
+            $var = "from matching node"
+          }
+
+          class foo {
+            notify { 'something': message => $var, }
+          }
+        MANIFEST
+      end
     end
   end
 
@@ -715,9 +735,7 @@ describe "Two step scoping for variables" do
     before :each do
       Puppet[:parser] = 'future'
     end
-    it_behaves_like 'the scope' do
-    end
+
+    it_behaves_like 'the scope'
   end
-
 end
-

@@ -1,3 +1,5 @@
+require 'puppet/file_system/uniquefile'
+
 module Puppet
   require 'rbconfig'
 
@@ -29,27 +31,29 @@ module Puppet::Util::Execution
     end
   end
 
-  # Executes the provided command with STDIN connected to a pipe, yielding the
-  # pipe object.
-  # This allows data to be fed to the subprocess.
-  #
   # The command can be a simple string, which is executed as-is, or an Array,
   # which is treated as a set of command arguments to pass through.
   #
-  # In all cases this is passed directly to the shell, and STDOUT and STDERR
-  # are connected together during execution.
-  # @param command [String, Array<String>] the command to execute as one string, or as parts in an array.
-  #   the parts of the array are joined with one separating space between each entry when converting to
-  #   the command line string to execute.
-  # @param failonfail [Boolean] (true) if the execution should fail with Exception on failure or not.
+  # In either case, the command is passed directly to the shell, STDOUT and
+  # STDERR are connected together, and STDOUT will be streamed to the yielded
+  # pipe.
+  #
+  # @param command [String, Array<String>] the command to execute as one string,
+  #   or as parts in an array. The parts of the array are joined with one
+  #   separating space between each entry when converting to the command line
+  #   string to execute.
+  # @param failonfail [Boolean] (true) if the execution should fail with
+  #   Exception on failure or not.
   # @yield [pipe] to a block executing a subprocess
   # @yieldparam pipe [IO] the opened pipe
   # @yieldreturn [String] the output to return
-  # @raise [Puppet::ExecutionFailure] if the executed chiled process did not exit with status == 0 and `failonfail` is
-  #   `true`.
-  # @return [String] a string with the output from the subprocess executed by the given block
-  # @api public
+  # @raise [Puppet::ExecutionFailure] if the executed chiled process did not
+  #   exit with status == 0 and `failonfail` is `true`.
+  # @return [String] a string with the output from the subprocess executed by
+  #   the given block
   #
+  # @see Kernel#open for `mode` values
+  # @api public
   def self.execpipe(command, failonfail = true)
     # Paste together an array with spaces.  We used to paste directly
     # together, no spaces, which made for odd invocations; the user had to
@@ -77,14 +81,17 @@ module Puppet::Util::Execution
       end
     end
 
-    if failonfail
-      unless $CHILD_STATUS == 0
-        raise Puppet::ExecutionFailure, output
-      end
+    if failonfail && exitstatus != 0
+      raise Puppet::ExecutionFailure, output
     end
 
     output
   end
+
+  def self.exitstatus
+    $CHILD_STATUS.exitstatus
+  end
+  private_class_method :exitstatus
 
   # Wraps execution of {execute} with mapping of exception to given exception (and output as argument).
   # @raise [exception] under same conditions as {execute}, but raises the given `exception` with the output as argument
@@ -94,7 +101,7 @@ module Puppet::Util::Execution
     output = execute(command)
     return output
   rescue Puppet::ExecutionFailure
-    raise exception, output
+    raise exception, output, exception.backtrace
   end
 
   # Default empty options for {execute}
@@ -162,37 +169,44 @@ module Puppet::Util::Execution
 
     null_file = Puppet.features.microsoft_windows? ? 'NUL' : '/dev/null'
 
-    stdin = File.open(options[:stdinfile] || null_file, 'r')
-    stdout = options[:squelch] ? File.open(null_file, 'w') : Tempfile.new('puppet')
-    stderr = options[:combine] ? stdout : File.open(null_file, 'w')
+    begin
+      stdin = File.open(options[:stdinfile] || null_file, 'r')
+      stdout = options[:squelch] ? File.open(null_file, 'w') : Puppet::FileSystem::Uniquefile.new('puppet')
+      stderr = options[:combine] ? stdout : File.open(null_file, 'w')
 
-    exec_args = [command, options, stdin, stdout, stderr]
+      exec_args = [command, options, stdin, stdout, stderr]
 
-    if execution_stub = Puppet::Util::ExecutionStub.current_value
-      return execution_stub.call(*exec_args)
-    elsif Puppet.features.posix?
-      child_pid = execute_posix(*exec_args)
-      exit_status = Process.waitpid2(child_pid).last.exitstatus
-    elsif Puppet.features.microsoft_windows?
-      process_info = execute_windows(*exec_args)
-      begin
-        exit_status = Puppet::Util::Windows::Process.wait_process(process_info.process_handle)
-      ensure
-        Puppet::Util::Windows::Process.CloseHandle(process_info.process_handle)
-        Puppet::Util::Windows::Process.CloseHandle(process_info.thread_handle)
+      if execution_stub = Puppet::Util::ExecutionStub.current_value
+        return execution_stub.call(*exec_args)
+      elsif Puppet.features.posix?
+        child_pid = execute_posix(*exec_args)
+        exit_status = Process.waitpid2(child_pid).last.exitstatus
+      elsif Puppet.features.microsoft_windows?
+        process_info = execute_windows(*exec_args)
+        begin
+          exit_status = Puppet::Util::Windows::Process.wait_process(process_info.process_handle)
+        ensure
+          FFI::WIN32.CloseHandle(process_info.process_handle)
+          FFI::WIN32.CloseHandle(process_info.thread_handle)
+        end
       end
-    end
 
-    [stdin, stdout, stderr].each {|io| io.close rescue nil}
+      [stdin, stdout, stderr].each {|io| io.close rescue nil}
 
-    # read output in if required
-    unless options[:squelch]
-      output = wait_for_output(stdout)
-      Puppet.warning "Could not get output" unless output
-    end
+      # read output in if required
+      unless options[:squelch]
+        output = wait_for_output(stdout)
+        Puppet.warning "Could not get output" unless output
+      end
 
-    if options[:failonfail] and exit_status != 0
-      raise Puppet::ExecutionFailure, "Execution of '#{str}' returned #{exit_status}: #{output}"
+      if options[:failonfail] and exit_status != 0
+        raise Puppet::ExecutionFailure, "Execution of '#{str}' returned #{exit_status}: #{output.strip}"
+      end
+    ensure
+      if !options[:squelch] && stdout
+        # if we opened a temp file for stdout, we need to clean it up.
+        stdout.close!
+      end
     end
 
     Puppet::Util::Execution::ProcessOutput.new(output || '', exit_status)

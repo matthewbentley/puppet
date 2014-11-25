@@ -58,7 +58,7 @@ module Puppet
         begin
           uri = URI.parse(URI.escape(source))
         rescue => detail
-          self.fail "Could not understand source #{source}: #{detail}"
+          self.fail Puppet::Error, "Could not understand source #{source}: #{detail}", detail
         end
 
         self.fail "Cannot use relative URLs '#{source}'" unless uri.absolute?
@@ -95,13 +95,13 @@ module Puppet
       metadata && metadata.checksum
     end
 
-    # Look up (if necessary) and return remote content.
+    # Look up (if necessary) and return local content.
     def content
       return @content if @content
       raise Puppet::DevError, "No source for content was stored with the metadata" unless metadata.source
 
       unless tmp = Puppet::FileServing::Content.indirection.find(metadata.source, :environment => resource.catalog.environment, :links => resource[:links])
-        fail "Could not find any content at %s" % metadata.source
+        self.fail "Could not find any content at %s" % metadata.source
       end
       @content = tmp.content
     end
@@ -169,16 +169,22 @@ module Puppet
       return nil unless value
       value.each do |source|
         begin
-          if data = Puppet::FileServing::Metadata.indirection.find(source, :environment => resource.catalog.environment, :links => resource[:links])
+          options = {
+            :environment          => resource.catalog.environment_instance,
+            :links                => resource[:links],
+            :source_permissions   => resource[:source_permissions]
+          }
+
+          if data = Puppet::FileServing::Metadata.indirection.find(source, options)
             @metadata = data
             @metadata.source = source
             break
           end
         rescue => detail
-          fail detail, "Could not retrieve file metadata for #{source}: #{detail}"
+          self.fail Puppet::Error, "Could not retrieve file metadata for #{source}: #{detail}", detail
         end
       end
-      fail "Could not retrieve information from environment #{resource.catalog.environment} source(s) #{value.join(", ")}" unless @metadata
+      self.fail "Could not retrieve information from environment #{resource.catalog.environment} source(s) #{value.join(", ")}" unless @metadata
       @metadata
     end
 
@@ -201,17 +207,17 @@ module Puppet
     def port
       (uri and uri.port) or Puppet.settings[:masterport]
     end
-    private
-
-    def scheme
-      (uri and uri.scheme)
-    end
 
     def uri
       @uri ||= URI.parse(URI.escape(metadata.source))
     end
 
     private
+
+    def scheme
+      (uri and uri.scheme)
+    end
+
     def found?
       ! (metadata.nil? or metadata.ftype.nil?)
     end
@@ -219,7 +225,10 @@ module Puppet
     def copy_source_value(metadata_method)
       param_name = (metadata_method == :checksum) ? :content : metadata_method
       if resource[param_name].nil? or resource[param_name] == :absent
-        resource[param_name] = metadata.send(metadata_method)
+        value = metadata.send(metadata_method)
+        # Force the mode value in file resources to be a string containing octal.
+        value = value.to_s(8) if param_name == :mode && value.is_a?(Numeric)
+        resource[param_name] = value
       end
     end
   end

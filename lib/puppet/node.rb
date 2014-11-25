@@ -9,26 +9,28 @@ class Puppet::Node
   # the node sources.
   extend Puppet::Indirector
 
-  # Adds the environment getter and setter, with some instance/string conversion
-  include Puppet::Node::Environment::Helper
-
   # Use the node source as the indirection terminus.
   indirects :node, :terminus_setting => :node_terminus, :doc => "Where to find node information.
     A node is composed of its name, its facts, and its environment."
 
-  attr_accessor :name, :classes, :source, :ipaddress, :parameters, :trusted_data
+  attr_accessor :name, :classes, :source, :ipaddress, :parameters, :trusted_data, :environment_name
   attr_reader :time, :facts
 
   ::PSON.register_document_type('Node',self)
 
-  def self.from_pson(pson)
-    raise ArgumentError, "No name provided in serialized data" unless name = pson['name']
+  def self.from_data_hash(data)
+    raise ArgumentError, "No name provided in serialized data" unless name = data['name']
 
     node = new(name)
-    node.classes = pson['classes']
-    node.parameters = pson['parameters']
-    node.environment = pson['environment']
+    node.classes = data['classes']
+    node.parameters = data['parameters']
+    node.environment_name = data['environment']
     node
+  end
+
+  def self.from_pson(pson)
+    Puppet.deprecation_warning("from_pson is being removed in favour of from_data_hash.")
+    self.from_data_hash(pson)
   end
 
   def to_data_hash
@@ -53,15 +55,35 @@ class Puppet::Node
   end
 
   def environment
-    return super if @environment
+    if @environment
+      @environment
+    else
+      if env = parameters["environment"]
+        self.environment = env
+      elsif environment_name
+        self.environment = environment_name
+      else
+        # This should not be :current_environment, this is the default
+        # for a node when it has not specified its environment
+        # Tt will be used to establish what the current environment is.
+        #
+        self.environment = Puppet.lookup(:environments).get!(Puppet[:environment])
+      end
 
-    if env = parameters["environment"]
-      self.environment = env
-      return super
+      @environment
     end
+  end
 
-    # Else, return the default
-    Puppet::Node::Environment.new
+  def environment=(env)
+    if env.is_a?(String) or env.is_a?(Symbol)
+      @environment = Puppet.lookup(:environments).get!(env)
+    else
+      @environment = env
+    end
+  end
+
+  def has_environment_instance?
+    !@environment.nil?
   end
 
   def initialize(name, options = {})

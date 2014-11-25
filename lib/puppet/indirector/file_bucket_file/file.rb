@@ -87,7 +87,10 @@ module Puppet::FileBucketFile
             Puppet::FileSystem.touch(contents_file)
           else
             Puppet::FileSystem.open(contents_file, 0440, 'wb') do |of|
-              of.write(bucket_file.contents)
+              # PUP-1044 writes all of the contents
+              bucket_file.stream() do |src|
+                FileUtils.copy_stream(src, of)
+              end
             end
           end
 
@@ -104,8 +107,9 @@ module Puppet::FileBucketFile
       if path == '' # Treat "md5/<checksum>/" like "md5/<checksum>"
         path = nil
       end
-      raise "Unsupported checksum type #{checksum_type.inspect}" if checksum_type != 'md5'
-      raise "Invalid checksum #{checksum.inspect}" if checksum !~ /^[0-9a-f]{32}$/
+      raise ArgumentError, "Unsupported checksum type #{checksum_type.inspect}" if checksum_type != Puppet[:digest_algorithm]
+      expected = method(checksum_type + "_hex_length").call
+      raise "Invalid checksum #{checksum.inspect}" if checksum !~ /^[0-9a-f]{#{expected}}$/
       [checksum, path]
     end
 
@@ -123,8 +127,8 @@ module Puppet::FileBucketFile
     # @param contents_file [Object] Opaque file path
     # @param bucket_file [IO]
     def verify_identical_file!(contents_file, bucket_file)
-      if bucket_file.contents.size == Puppet::FileSystem.size(contents_file)
-        if Puppet::FileSystem.compare_stream(contents_file, bucket_file.stream)
+      if bucket_file.size == Puppet::FileSystem.size(contents_file)
+        if bucket_file.stream() {|s| Puppet::FileSystem.compare_stream(contents_file, s) }
           Puppet.info "FileBucket got a duplicate file #{bucket_file.checksum}"
           return
         end

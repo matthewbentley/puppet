@@ -3,6 +3,8 @@
 #
 class Puppet::Pops::Parser::EvaluatingParser
 
+  attr_reader :parser
+
   def initialize()
     @parser = Puppet::Pops::Parser::Parser.new()
   end
@@ -17,7 +19,7 @@ class Puppet::Pops::Parser::EvaluatingParser
     # Also a possible improvement (if the YAML parser returns positions) is to provide correct output of position.
     #
     begin
-      assert_and_report(@parser.parse_string(s))
+      assert_and_report(parser.parse_string(s))
     rescue Puppet::ParseError => e
       # TODO: This is not quite right, why does not the exception have the correct file?
       e.file = @file_source unless e.file.is_a?(String) && !e.file.empty?
@@ -28,7 +30,7 @@ class Puppet::Pops::Parser::EvaluatingParser
   def parse_file(file)
     @file_source = file
     clear()
-    assert_and_report(@parser.parse_file(file))
+    assert_and_report(parser.parse_file(file))
   end
 
   def evaluate_string(scope, s, file_source='unknown')
@@ -43,11 +45,19 @@ class Puppet::Pops::Parser::EvaluatingParser
     @acceptor = nil
   end
 
+  # Create a closure that can be called in the given scope
+  def closure(model, scope)
+    Puppet::Pops::Evaluator::Closure.new(evaluator, model, scope)
+  end
+
   def evaluate(scope, model)
     return nil unless model
-    ast = Puppet::Pops::Model::AstTransformer.new(@file_source, nil).transform(model)
-    return nil unless ast
-    ast.safeevaluate(scope)
+    evaluator.evaluate(model, scope)
+  end
+
+  def evaluator
+    @@evaluator ||= Puppet::Pops::Evaluator::EvaluatorImpl.new()
+    @@evaluator
   end
 
   def validate(parse_result)
@@ -61,7 +71,7 @@ class Puppet::Pops::Parser::EvaluatingParser
   end
 
   def validator(acceptor)
-    Puppet::Pops::Validation::ValidatorFactory_3_1.new().validator(acceptor)
+    Puppet::Pops::Validation::ValidatorFactory_4_0.new().validator(acceptor)
   end
 
   def assert_and_report(parse_result)
@@ -71,52 +81,8 @@ class Puppet::Pops::Parser::EvaluatingParser
     end
     validation_result = validate(parse_result)
 
-    max_errors = Puppet[:max_errors]
-    max_warnings = Puppet[:max_warnings] + 1
-    max_deprecations = Puppet[:max_deprecations] + 1
-
-    # If there are warnings output them
-    warnings = validation_result.warnings
-    if warnings.size > 0
-      formatter = Puppet::Pops::Validation::DiagnosticFormatterPuppetStyle.new
-      emitted_w = 0
-      emitted_dw = 0
-      validation_result.warnings.each {|w|
-        if w.severity == :deprecation
-          # Do *not* call Puppet.deprecation_warning it is for internal deprecation, not
-          # deprecation of constructs in manifests! (It is not designed for that purpose even if
-          # used throughout the code base).
-          #
-          Puppet.warning(formatter.format(w)) if emitted_dw < max_deprecations
-          emitted_dw += 1
-        else
-          Puppet.warning(formatter.format(w)) if emitted_w < max_warnings
-          emitted_w += 1
-        end
-        break if emitted_w > max_warnings && emitted_dw > max_deprecations # but only then
-      }
-    end
-
-    # If there were errors, report the first found. Use a puppet style formatter.
-    errors = validation_result.errors
-    if errors.size > 0
-      formatter = Puppet::Pops::Validation::DiagnosticFormatterPuppetStyle.new
-      if errors.size == 1 || max_errors <= 1
-        # raise immediately
-        raise Puppet::ParseError.new(formatter.format(errors[0]))
-      end
-      emitted = 0
-      errors.each do |e|
-        Puppet.err(formatter.format(e))
-        emitted += 1
-        break if emitted >= max_errors
-      end
-      warnings_message = warnings.size > 0 ? ", and #{warnings.size} warnings" : ""
-      giving_up_message = "Found #{errors.size} errors#{warnings_message}. Giving up"
-      exception = Puppet::ParseError.new(giving_up_message)
-      exception.file = errors[0].file
-      raise exception
-    end
+    Puppet::Pops::IssueReporter.assert_and_report(validation_result,
+                                          :emit_warnings => true)
     parse_result
   end
 
@@ -166,19 +132,9 @@ class Puppet::Pops::Parser::EvaluatingParser
     escaped << '"'
   end
 
-  # This is a temporary solution to making it possible to use the new evaluator. The main class
-  # will eventually have this behavior instead of using transformation to Puppet 3.x AST
-  class Transitional < Puppet::Pops::Parser::EvaluatingParser
-
-    def evaluate(scope, model)
-      return nil unless model
-      @@evaluator ||= Puppet::Pops::Evaluator::EvaluatorImpl.new()
-      @@evaluator.evaluate(model, scope)
+  class EvaluatingEppParser < Puppet::Pops::Parser::EvaluatingParser
+    def initialize()
+      @parser = Puppet::Pops::Parser::EppParser.new()
     end
-
-    def validator(acceptor)
-      Puppet::Pops::Validation::ValidatorFactory_4_0.new().validator(acceptor)
-    end
-
   end
 end

@@ -80,9 +80,9 @@ class Puppet::SSL::CertificateAuthority
     auto = Puppet[:autosign]
 
     decider = case auto
-      when 'false', false, nil
+      when false
         AutosignNever.new
-      when 'true', true
+      when true
         AutosignAlways.new
       else
         file = Puppet::FileSystem.pathname(auto)
@@ -174,7 +174,7 @@ class Puppet::SSL::CertificateAuthority
     begin
       Puppet.settings.setting(:capass).open('w') { |f| f.print pass }
     rescue Errno::EACCES => detail
-      raise Puppet::Error, "Could not write CA password: #{detail}"
+      raise Puppet::Error, "Could not write CA password: #{detail}", detail.backtrace
     end
 
     @password = pass
@@ -184,9 +184,11 @@ class Puppet::SSL::CertificateAuthority
 
   # Lists the names of all signed certificates.
   #
+  # @param name [Array<string>] filter to cerificate names
+  #
   # @return [Array<String>]
-  def list
-    list_certificates.collect { |c| c.name }
+  def list(name='*')
+    list_certificates(name).collect { |c| c.name }
   end
 
   # Return all the certificate objects as found by the indirector
@@ -199,9 +201,11 @@ class Puppet::SSL::CertificateAuthority
   # @author Jeff Weiss <jeff.weiss@puppetlabs.com>
   # @api Puppet Enterprise Licensing
   #
+  # @param name [Array<string>] filter to cerificate names
+  #
   # @return [Array<Puppet::SSL::Certificate>]
-  def list_certificates
-    Puppet::SSL::Certificate.indirection.search("*")
+  def list_certificates(name='*')
+    Puppet::SSL::Certificate.indirection.search(name)
   end
 
   # Read the next serial from the serial file, and increment the
@@ -239,14 +243,23 @@ class Puppet::SSL::CertificateAuthority
   def revoke(name)
     raise ArgumentError, "Cannot revoke certificates when the CRL is disabled" unless crl
 
-    if cert = Puppet::SSL::Certificate.indirection.find(name)
-      serial = cert.content.serial
-    elsif name =~ /^0x[0-9A-Fa-f]+$/
-      serial = name.hex
-    elsif ! serial = inventory.serial(name)
+    cert = Puppet::SSL::Certificate.indirection.find(name)
+
+    serials = if cert
+                [cert.content.serial]
+              elsif name =~ /^0x[0-9A-Fa-f]+$/
+                [name.hex]
+              else
+                inventory.serials(name)
+              end
+
+    if serials.empty?
       raise ArgumentError, "Could not find a serial number for #{name}"
     end
-    crl.revoke(serial, host.key.content)
+
+    serials.each do |s|
+      crl.revoke(s, host.key.content)
+    end
   end
 
   # This initializes our CA so it actually works.  This should be a private
@@ -408,7 +421,7 @@ class Puppet::SSL::CertificateAuthority
   private :create_x509_store
 
   # Utility method which is API for PE license checking.
-  # This is used rather than `verify` because 
+  # This is used rather than `verify` because
   #  1) We have already read the certificate from disk into memory.
   #     To read the certificate from disk again is just wasteful.
   #  2) Because we're checking a large number of certificates against

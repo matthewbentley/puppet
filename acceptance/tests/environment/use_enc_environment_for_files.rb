@@ -1,6 +1,6 @@
 test_name "Agent should use environment given by ENC for fetching remote files"
 
-testdir = master.tmpdir('respect_enc_test')
+testdir = create_tmpdir_for_user master, 'respect_enc_test'
 
 create_remote_file master, "#{testdir}/enc.rb", <<END
 #!#{master['puppetbindir']}/ruby
@@ -30,6 +30,9 @@ master_opts = {
     'manifest' => "#{testdir}/different.pp"
   }
 }
+if master.is_pe?
+  master_opts['special']['modulepath'] << ":#{master['sitemoduledir']}"
+end
 
 with_puppet_running_on master, master_opts, testdir do
   agents.each do |agent|

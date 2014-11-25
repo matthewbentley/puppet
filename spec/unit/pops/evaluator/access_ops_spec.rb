@@ -166,13 +166,13 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
 
     # Hash Type
     #
-    it 'produces a Hash[Literal,String] from the expression Hash[String]' do
+    it 'produces a Hash[Scalar,String] from the expression Hash[String]' do
       expr = fqr('Hash')[fqr('String')]
-      expect(evaluate(expr)).to be_the_type(types.hash_of(types.string, types.literal))
+      expect(evaluate(expr)).to be_the_type(types.hash_of(types.string, types.scalar))
 
       # arguments are flattened
       expr = fqr('Hash')[[fqr('String')]]
-      expect(evaluate(expr)).to be_the_type(types.hash_of(types.string, types.literal))
+      expect(evaluate(expr)).to be_the_type(types.hash_of(types.string, types.scalar))
     end
 
     it 'produces a Hash[String,String] from the expression Hash[String, String]' do
@@ -180,9 +180,9 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
       expect(evaluate(expr)).to be_the_type(types.hash_of(types.string, types.string))
     end
 
-    it 'produces a Hash[Literal,String] from the expression Hash[Integer][String]' do
+    it 'produces a Hash[Scalar,String] from the expression Hash[Integer][String]' do
       expr = fqr('Hash')[fqr('Integer')][fqr('String')]
-      expect(evaluate(expr)).to be_the_type(types.hash_of(types.string, types.literal))
+      expect(evaluate(expr)).to be_the_type(types.hash_of(types.string, types.scalar))
     end
 
     it "gives an error if parameter is not a type" do
@@ -206,9 +206,49 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
       expect(evaluate(expr)).to be_the_type(types.array_of(types.string))
     end
 
-    it "gives an error if parameter is not a type" do
+    it 'produces a size constrained Array when the last two arguments specify this' do
+      expr = fqr('Array')[fqr('String'), 1]
+      expected_t = types.array_of(String)
+      types.constrain_size(expected_t, 1, :default)
+      expect(evaluate(expr)).to be_the_type(expected_t)
+
+      expr = fqr('Array')[fqr('String'), 1, 2]
+      expected_t = types.array_of(String)
+      types.constrain_size(expected_t, 1, 2)
+      expect(evaluate(expr)).to be_the_type(expected_t)
+    end
+
+    it "Array parameterization gives an error if parameter is not a type" do
       expr = fqr('Array')['String']
       expect { evaluate(expr)}.to raise_error(/Array-Type\[\] arguments must be types/)
+    end
+
+    # Tuple Type
+    #
+    it 'produces a Tuple[String] from the expression Tuple[String]' do
+      expr = fqr('Tuple')[fqr('String')]
+      expect(evaluate(expr)).to be_the_type(types.tuple(String))
+
+      # arguments are flattened
+      expr = fqr('Tuple')[[fqr('String')]]
+      expect(evaluate(expr)).to be_the_type(types.tuple(String))
+    end
+
+    it "Tuple parameterization gives an error if parameter is not a type" do
+      expr = fqr('Tuple')['String']
+      expect { evaluate(expr)}.to raise_error(/Tuple-Type, Cannot use String where Any-Type is expected/)
+    end
+
+    it 'produces a varargs Tuple when the last two arguments specify size constraint' do
+      expr = fqr('Tuple')[fqr('String'), 1]
+      expected_t = types.tuple(String)
+      types.constrain_size(expected_t, 1, :default)
+      expect(evaluate(expr)).to be_the_type(expected_t)
+
+      expr = fqr('Tuple')[fqr('String'), 1, 2]
+      expected_t = types.tuple(String)
+      types.constrain_size(expected_t, 1, 2)
+      expect(evaluate(expr)).to be_the_type(expected_t)
     end
 
     # Pattern Type
@@ -236,15 +276,31 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
       expect(evaluate(expr)).to be_the_type(types.host_class('apache'))
       expr = fqr('Class')[literal('apache')]
       expect(evaluate(expr)).to be_the_type(types.host_class('apache'))
+    end
 
+    it 'produces an array of Class when args are in an array' do
       # arguments are flattened
       expr = fqr('Class')[[fqn('apache')]]
-      expect(evaluate(expr)).to be_the_type(types.host_class('apache'))
-      end
+      expect(evaluate(expr)[0]).to be_the_type(types.host_class('apache'))
+    end
 
-    it 'produces same class if no class name is given' do
+    it 'produces undef for Class if arg is undef' do
+      # arguments are flattened
+      expr = fqr('Class')[nil]
+      expect(evaluate(expr)).to be_nil
+    end
+
+    it 'produces empty array for Class if arg is [undef]' do
+      # arguments are flattened
+      expr = fqr('Class')[[]]
+      expect(evaluate(expr)).to be_eql([])
+      expr = fqr('Class')[[nil]]
+      expect(evaluate(expr)).to be_eql([])
+    end
+
+    it 'raises error if access is to no keys' do
       expr = fqr('Class')[fqn('apache')][]
-      expect { evaluate(expr) }.to raise_error(/Evaluation Error: Class\[apache\]\[\] accepts 1 argument\. Got 0/)
+      expect { evaluate(expr) }.to raise_error(/Evaluation Error: Class\[apache\]\[\] accepts 1 or more arguments\. Got 0/)
     end
 
     it 'produces a collection of classes when multiple class names are given' do
@@ -254,9 +310,30 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
       expect(result[1]).to be_the_type(types.host_class('nginx'))
     end
 
+    it 'removes leading :: in class name' do
+      expr = fqr('Class')['::evoe']
+      expect(evaluate(expr)).to be_the_type(types.host_class('evoe'))
+    end
+
     it 'raises error if the name is not a valid name' do
       expr = fqr('Class')['fail-whale']
       expect { evaluate(expr) }.to raise_error(/Illegal name/)
+    end
+
+    it 'downcases capitalized class names' do
+      expr = fqr('Class')['My::Class']
+
+      expect(evaluate(expr)).to be_the_type(types.host_class('my::class'))
+    end
+
+    it 'gives an error if no keys are given as argument' do
+      expr = fqr('Class')[]
+      expect {evaluate(expr)}.to raise_error(/Evaluation Error: Class\[\] accepts 1 or more arguments. Got 0/)
+    end
+
+    it 'produces an empty array if the keys reduce to empty array' do
+      expr = fqr('Class')[literal([[],[]])]
+      expect(evaluate(expr)).to be_eql([])
     end
 
     # Resource
@@ -265,10 +342,12 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
       expect(evaluate(expr)).to be_the_type(types.resource('File'))
       expr = fqr('Resource')[literal('File')]
       expect(evaluate(expr)).to be_the_type(types.resource('File'))
+    end
 
+    it 'does not allow the type to be specified in an array' do
       # arguments are flattened
       expr = fqr('Resource')[[fqr('File')]]
-      expect(evaluate(expr)).to be_the_type(types.resource('File'))
+      expect{evaluate(expr)}.to raise_error(Puppet::ParseError, /must be a resource type or a String/)
     end
 
     it 'produces a specific resource reference type from File[title]' do
@@ -288,6 +367,32 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
       result = evaluate(expr)
       expect(result[0]).to be_the_type(types.resource('File', 'x'))
       expect(result[1]).to be_the_type(types.resource('File', 'y'))
+    end
+
+    it 'produces undef for Resource if arg is undef' do
+      # arguments are flattened
+      expr = fqr('File')[nil]
+      expect(evaluate(expr)).to be_nil
+    end
+
+    it 'gives an error if no keys are given as argument to Resource' do
+      expr = fqr('Resource')[]
+      expect {evaluate(expr)}.to raise_error(/Evaluation Error: Resource\[\] accepts 1 or more arguments. Got 0/)
+    end
+
+    it 'produces an empty array if the type is given, and keys reduce to empty array for Resource' do
+      expr = fqr('Resource')[fqr('File'),literal([[],[]])]
+      expect(evaluate(expr)).to be_eql([])
+    end
+
+    it 'gives an error i no keys are given as argument to a specific Resource type' do
+      expr = fqr('File')[]
+      expect {evaluate(expr)}.to raise_error(/Evaluation Error: File\[\] accepts 1 or more arguments. Got 0/)
+    end
+
+    it 'produces an empty array if the keys reduce to empty array for a specific Resource tyoe' do
+      expr = fqr('File')[literal([[],[]])]
+      expect(evaluate(expr)).to be_eql([])
     end
 
     it 'gives an error if resource is not found' do
@@ -310,12 +415,12 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
     # Ruby Type
     #
     it 'creates a Ruby Type instance when applied to a Ruby Type' do
-      type_expr = fqr('Ruby')['String']
+      type_expr = fqr('Runtime')['ruby','String']
       tf = Puppet::Pops::Types::TypeFactory
       expect(evaluate(type_expr)).to eql(tf.ruby_type('String'))
 
       # arguments are flattened
-      type_expr = fqr('Ruby')[['String']]
+      type_expr = fqr('Runtime')[['ruby', 'String']]
       expect(evaluate(type_expr)).to eql(tf.ruby_type('String'))
     end
 
@@ -329,7 +434,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
     end
 
     failure_message_for_should do |actual|
-      "expected #{calc.string(type)}, but was #{calc.string(actual)}"
+      "expected #{type.to_s}, but was #{actual.to_s}"
     end
   end
 

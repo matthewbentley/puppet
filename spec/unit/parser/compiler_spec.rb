@@ -1,6 +1,6 @@
-#! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet_spec/compiler'
+require 'matchers/resource'
 
 class CompilerTestResource
   attr_accessor :builtin, :virtual, :evaluated, :type, :title
@@ -53,6 +53,7 @@ end
 
 describe Puppet::Parser::Compiler do
   include PuppetSpec::Files
+  include Matchers::Resource
 
   def resource(type, title)
     Puppet::Parser::Resource.new(type, title, :scope => @scope)
@@ -66,13 +67,15 @@ describe Puppet::Parser::Compiler do
     now = Time.now
     Time.stubs(:now).returns(now)
 
-    @node = Puppet::Node.new("testnode", :facts => Puppet::Node::Facts.new("facts", {}))
-    @known_resource_types = Puppet::Resource::TypeCollection.new "development"
+    environment = Puppet::Node::Environment.create(:testing, [])
+    @node = Puppet::Node.new("testnode",
+                             :facts => Puppet::Node::Facts.new("facts", {}),
+                             :environment => environment)
+    @known_resource_types = environment.known_resource_types
     @compiler = Puppet::Parser::Compiler.new(@node)
     @scope = Puppet::Parser::Scope.new(@compiler, :source => stub('source'))
     @scope_resource = Puppet::Parser::Resource.new(:file, "/my/file", :scope => @scope)
     @scope.resource = @scope_resource
-    @compiler.environment.stubs(:known_resource_types).returns @known_resource_types
   end
 
   it "should have a class method that compiles, converts, and returns a catalog" do
@@ -93,6 +96,13 @@ describe Puppet::Parser::Compiler do
 
   it "should use the node's environment as its environment" do
     @compiler.environment.should equal(@node.environment)
+  end
+
+  it "fails if the node's environment has conflicting manifest settings" do
+    conflicted_environment = Puppet::Node::Environment.create(:testing, [], '/some/environment.conf/manifest.pp')
+    conflicted_environment.stubs(:conflicting_manifest_settings?).returns(true)
+    @node.environment = conflicted_environment
+    expect { Puppet::Parser::Compiler.compile(@node) }.to raise_error(Puppet::Error, /disable_per_environment_manifest.*true.*environment.conf.*manifest.*conflict/)
   end
 
   it "should include the resource type collection helper" do
@@ -644,7 +654,7 @@ describe Puppet::Parser::Compiler do
       @node.classes = klass
       klass = Puppet::Resource::Type.new(:hostclass, 'foo', :arguments => {})
       @compiler.topscope.known_resource_types.add klass
-      lambda { @compiler.compile }.should raise_error(Puppet::ParseError, "Invalid parameter 3")
+      lambda { @compiler.compile }.should raise_error(Puppet::ParseError, "Invalid parameter 3 on Class[Foo]")
     end
 
     it "should ensure class is in catalog without params" do
@@ -679,7 +689,7 @@ describe Puppet::Parser::Compiler do
     it "should skip classes that have already been evaluated" do
       @compiler.catalog.stubs(:tag)
 
-      @scope.stubs(:class_scope).with(@class).returns("something")
+      @scope.stubs(:class_scope).with(@class).returns(@scope)
 
       @compiler.expects(:add_resource).never
 
@@ -692,7 +702,7 @@ describe Puppet::Parser::Compiler do
     it "should skip classes previously evaluated with different capitalization" do
       @compiler.catalog.stubs(:tag)
       @scope.stubs(:find_hostclass).with("MyClass",{:assume_fqname => false}).returns(@class)
-      @scope.stubs(:class_scope).with(@class).returns("something")
+      @scope.stubs(:class_scope).with(@class).returns(@scope)
       @compiler.expects(:add_resource).never
       @resource.expects(:evaluate).never
       Puppet::Parser::Resource.expects(:new).never
@@ -854,6 +864,23 @@ describe Puppet::Parser::Compiler do
 
         it "should fail if the class doesn't exist" do
           expect { compile_to_catalog('', node) }.to raise_error(Puppet::Error, /Could not find class something/)
+        end
+
+        it 'evaluates classes declared with parameters before unparameterized classes' do
+          node = Puppet::Node.new('someone', :classes => { 'app::web' => {}, 'app' => { 'port' => 8080 } })
+          manifest = <<-MANIFEST
+          class app($port = 80) { }
+
+          class app::web($port = $app::port) inherits app {
+            notify { expected: message => "$port" }
+          }
+          MANIFEST
+
+          catalog = compile_to_catalog(manifest, node)
+
+          expect(catalog).to have_resource("Class[App]").with_parameter(:port, 8080)
+          expect(catalog).to have_resource("Class[App::Web]")
+          expect(catalog).to have_resource("Notify[expected]").with_parameter(:message, "8080")
         end
       end
     end

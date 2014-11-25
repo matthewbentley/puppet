@@ -213,13 +213,13 @@ module Puppet::Pops::Binder::BindingsFactory
     # @note
     #   This is only needed if something other than the default type `Data` is wanted, or if the wanted type is
     #   not provided by one of the convenience methods {#array_of_data}, {#boolean}, {#float}, {#hash_of_data},
-    #   {#integer}, {#literal}, {#pattern}, {#string}, or one of the collection methods {#array_of}, or {#hash_of}.
+    #   {#integer}, {#scalar}, {#pattern}, {#string}, or one of the collection methods {#array_of}, or {#hash_of}.
     #
     # To create a type, use the method {#type_factory}, to obtain the type.
     # @example creating a Hash with Integer key and Array[Integer] element type
     #     tc = type_factory
     #     type(tc.hash(tc.array_of(tc.integer), tc.integer)
-    # @param type [Puppet::Pops::Types::PObjectType] the type to set for the binding
+    # @param type [Puppet::Pops::Types::PAnyType] the type to set for the binding
     # @api public
     #
     def type(type)
@@ -262,11 +262,11 @@ module Puppet::Pops::Binder::BindingsFactory
       type(T.pattern())
     end
 
-    # Sets the type of the binding to the abstract type Literal.
-    # @return [Puppet::Pops::Types::PLiteralType] the type
+    # Sets the type of the binding to the abstract type Scalar.
+    # @return [Puppet::Pops::Types::PScalarType] the type
     # @api public
-    def literal()
-      type(T.literal())
+    def scalar()
+      type(T.scalar())
     end
 
     # Sets the type of the binding to the abstract type Data.
@@ -284,7 +284,7 @@ module Puppet::Pops::Binder::BindingsFactory
     end
 
     # Sets the type of the binding to Array[T], where T is given.
-    # @param t [Puppet::Pops::Types::PObjectType] the type of the elements of the array
+    # @param t [Puppet::Pops::Types::PAnyType] the type of the elements of the array
     # @return [Puppet::Pops::Types::PArrayType] the type
     # @api public
     def array_of(t)
@@ -310,7 +310,7 @@ module Puppet::Pops::Binder::BindingsFactory
     # Sets the type of the binding based on the given argument.
     # @overload instance_of(t)
     #   The same as calling {#type} with `t`.
-    #   @param t [Puppet::Pops::Types::PObjectType] the type
+    #   @param t [Puppet::Pops::Types::PAnyType] the type
     # @overload instance_of(o)
     #   Infers the type from the given Ruby object and sets that as the type - i.e. "set the type
     #   of the binding to be that of the given data object".
@@ -318,7 +318,7 @@ module Puppet::Pops::Binder::BindingsFactory
     # @overload instance_of(c)
     #   @param c [Class] the Class to base the type on.
     #   Sets the type based on the given ruby class. The result is one of the specific puppet types
-    #   if the class can be represented by a specific type, or the open ended PRubyType otherwise.
+    #   if the class can be represented by a specific type, or the open ended PRuntimeType otherwise.
     # @overload instance_of(s)
     #   The same as using a class, but instead of giving a class instance, the class is expressed using its fully
     #   qualified name. This method of specifying the type allows late binding (the class does not have to be loaded
@@ -695,7 +695,7 @@ module Puppet::Pops::Binder::BindingsFactory
   end
 
   # Creates a Producer that looks up a value.
-  # @param type [Puppet::Pops::Types::PObjectType] the type to lookup
+  # @param type [Puppet::Pops::Types::PAnyType] the type to lookup
   # @param name [String] the name to lookup
   # @return [Puppet::Pops::Binder::Bindings::ProducerDescriptor] a producer description
   # @api public
@@ -709,7 +709,7 @@ module Puppet::Pops::Binder::BindingsFactory
   # Creates a Hash lookup producer that looks up a hash value, and then a key in the hash.
   #
   # @return [Puppet::Pops::Binder::Bindings::ProducerDescriptor] a producer description
-  # @param type [Puppet::Pops::Types::PObjectType] the type to lookup (i.e. a Hash of some key/value type).
+  # @param type [Puppet::Pops::Types::PAnyType] the type to lookup (i.e. a Hash of some key/value type).
   # @param name [String] the name to lookup
   # @param key [Object] the key to lookup in the looked up hash (type should comply with given key type).
   # @api public

@@ -125,7 +125,7 @@ EOL
       parser =  Nagios::Parser.new
       expect {
         results = parser.parse(ESCAPED_SEMICOLON)
-      }.to_not raise_error Nagios::Parser::SyntaxError
+      }.to_not raise_error
     end
 
     it "should ignore it if it is a comment" do
@@ -147,7 +147,7 @@ EOL
       parser =  Nagios::Parser.new
       expect {
         results = parser.parse(POUND_SIGN_HASH_SYMBOL_NOT_IN_FIRST_COLUMN)
-      }.to_not raise_error Nagios::Parser::SyntaxError
+      }.to_not raise_error
     end
 
 
@@ -170,7 +170,7 @@ EOL
       parser =  Nagios::Parser.new
       expect {
         results = parser.parse(ANOTHER_ESCAPED_SEMICOLON)
-      }.to_not raise_error Nagios::Parser::SyntaxError
+      }.to_not raise_error
     end
 
     it "should parse correctly" do
@@ -217,6 +217,15 @@ describe "Nagios generator" do
     results = parser.parse(nagios_type.to_s)
     results[0].command_line.should eql(param)
   end
+
+  it "should accept FixNum params and convert to string" do
+    param = 1
+    nagios_type = Nagios::Base.create(:serviceescalation)
+    nagios_type.first_notification = param
+    parser =  Nagios::Parser.new
+    results = parser.parse(nagios_type.to_s)
+    results[0].first_notification.should eql(param.to_s)
+  end
 end
 
 describe "Nagios resource types" do
@@ -256,6 +265,12 @@ describe "Nagios resource types" do
 
       it "should have documentation for its target property" do
         puppet_type.attrclass(:target).instance_variable_get("@doc").should_not be_nil
+      end
+
+      [ :owner, :group, :mode ].each do |fileprop|
+        it "should have a #{fileprop} parameter" do
+          puppet_type.parameters.should be_include(fileprop)
+        end
       end
 
       nagios_type.parameters.reject { |param| param == nagios_type.namevar or param.to_s =~ /^[0-9]/ }.each do |param|

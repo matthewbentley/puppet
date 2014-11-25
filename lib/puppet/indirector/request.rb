@@ -20,23 +20,28 @@ class Puppet::Indirector::Request
 
   ::PSON.register_document_type('IndirectorRequest',self)
 
-  def self.from_pson(json)
-    raise ArgumentError, "No indirection name provided in json data" unless indirection_name = json['type']
-    raise ArgumentError, "No method name provided in json data" unless method = json['method']
-    raise ArgumentError, "No key provided in json data" unless key = json['key']
+  def self.from_data_hash(data)
+    raise ArgumentError, "No indirection name provided in data" unless indirection_name = data['type']
+    raise ArgumentError, "No method name provided in data" unless method = data['method']
+    raise ArgumentError, "No key provided in data" unless key = data['key']
 
-    request = new(indirection_name, method, key, nil, json['attributes'])
+    request = new(indirection_name, method, key, nil, data['attributes'])
 
-    if instance = json['instance']
+    if instance = data['instance']
       klass = Puppet::Indirector::Indirection.instance(request.indirection_name).model
       if instance.is_a?(klass)
         request.instance = instance
       else
-        request.instance = klass.from_pson(instance)
+        request.instance = klass.from_data_hash(instance)
       end
     end
 
     request
+  end
+
+  def self.from_pson(json)
+    Puppet.deprecation_warning("from_pson is being removed in favour of from_data_hash.")
+    self.from_data_hash(json)
   end
 
   def to_data_hash
@@ -78,14 +83,19 @@ class Puppet::Indirector::Request
   end
 
   def environment
-    @environment ||= Puppet::Node::Environment.new
+    # If environment has not been set directly, we should use the application's
+    # current environment
+    @environment ||= Puppet.lookup(:current_environment)
   end
 
   def environment=(env)
-    @environment = if env.is_a?(Puppet::Node::Environment)
+    @environment =
+    if env.is_a?(Puppet::Node::Environment)
       env
+    elsif (current_environment = Puppet.lookup(:current_environment)).name == env
+      current_environment
     else
-      Puppet::Node::Environment.new(env)
+      Puppet.lookup(:environments).get!(env)
     end
   end
 
@@ -274,7 +284,7 @@ class Puppet::Indirector::Request
     begin
       uri = URI.parse(URI.escape(key))
     rescue => detail
-      raise ArgumentError, "Could not understand URL #{key}: #{detail}"
+      raise ArgumentError, "Could not understand URL #{key}: #{detail}", detail.backtrace
     end
 
     # Just short-circuit these to full paths

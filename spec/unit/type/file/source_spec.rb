@@ -6,10 +6,16 @@ source = Puppet::Type.type(:file).attrclass(:source)
 describe Puppet::Type.type(:file).attrclass(:source) do
   include PuppetSpec::Files
 
+  around :each do |example|
+    Puppet.override(:environments => Puppet::Environments::Static.new) do
+      example.run
+    end
+  end
+
   before do
     # Wow that's a messy interface to the resource.
-    @environment = "myenv"
-    @resource = stub 'resource', :[]= => nil, :property => nil, :catalog => stub("catalog", :dependent_data_expired? => false, :environment => @environment), :line => 0, :file => ''
+    @environment = Puppet::Node::Environment.remote("myenv")
+    @resource = stub 'resource', :[]= => nil, :property => nil, :catalog => Puppet::Resource::Catalog.new(nil, @environment), :line => 0, :file => ''
     @foobar = make_absolute("/foo/bar baz")
     @feebooz = make_absolute("/fee/booz baz")
 
@@ -94,6 +100,7 @@ describe Puppet::Type.type(:file).attrclass(:source) do
     before do
       @metadata = stub 'metadata', :source= => nil
       @resource.stubs(:[]).with(:links).returns :manage
+      @resource.stubs(:[]).with(:source_permissions)
     end
 
     it "should return already-available metadata" do
@@ -109,22 +116,36 @@ describe Puppet::Type.type(:file).attrclass(:source) do
 
     it "should collect its metadata using the Metadata class if it is not already set" do
       @source = source.new(:resource => @resource, :value => @foobar)
-      Puppet::FileServing::Metadata.indirection.expects(:find).with(@foobar_uri, :environment => @environment, :links => :manage).returns @metadata
+      Puppet::FileServing::Metadata.indirection.expects(:find).with do |uri, options|
+        expect(uri).to eq @foobar_uri
+        expect(options[:environment]).to eq @environment
+        expect(options[:links]).to eq :manage
+      end.returns @metadata
+
       @source.metadata
     end
 
     it "should use the metadata from the first found source" do
       metadata = stub 'metadata', :source= => nil
       @source = source.new(:resource => @resource, :value => [@foobar, @feebooz])
-      Puppet::FileServing::Metadata.indirection.expects(:find).with(@foobar_uri, :environment => @environment, :links => :manage).returns nil
-      Puppet::FileServing::Metadata.indirection.expects(:find).with(@feebooz_uri, :environment => @environment, :links => :manage).returns metadata
+      options = {
+        :environment => @environment,
+        :links => :manage,
+        :source_permissions => nil
+      }
+      Puppet::FileServing::Metadata.indirection.expects(:find).with(@foobar_uri, options).returns nil
+      Puppet::FileServing::Metadata.indirection.expects(:find).with(@feebooz_uri, options).returns metadata
       @source.metadata.should equal(metadata)
     end
 
     it "should store the found source as the metadata's source" do
       metadata = mock 'metadata'
       @source = source.new(:resource => @resource, :value => @foobar)
-      Puppet::FileServing::Metadata.indirection.expects(:find).with(@foobar_uri, :environment => @environment, :links => :manage).returns metadata
+      Puppet::FileServing::Metadata.indirection.expects(:find).with do |uri, options|
+        expect(uri).to eq @foobar_uri
+        expect(options[:environment]).to eq @environment
+        expect(options[:links]).to eq :manage
+      end.returns metadata
 
       metadata.expects(:source=).with(@foobar_uri)
       @source.metadata
@@ -132,7 +153,11 @@ describe Puppet::Type.type(:file).attrclass(:source) do
 
     it "should fail intelligently if an exception is encountered while querying for metadata" do
       @source = source.new(:resource => @resource, :value => @foobar)
-      Puppet::FileServing::Metadata.indirection.expects(:find).with(@foobar_uri, :environment => @environment, :links => :manage).raises RuntimeError
+      Puppet::FileServing::Metadata.indirection.expects(:find).with do |uri, options|
+        expect(uri).to eq @foobar_uri
+        expect(options[:environment]).to eq @environment
+        expect(options[:links]).to eq :manage
+      end.raises RuntimeError
 
       @source.expects(:fail).raises ArgumentError
       lambda { @source.metadata }.should raise_error(ArgumentError)
@@ -140,7 +165,11 @@ describe Puppet::Type.type(:file).attrclass(:source) do
 
     it "should fail if no specified sources can be found" do
       @source = source.new(:resource => @resource, :value => @foobar)
-      Puppet::FileServing::Metadata.indirection.expects(:find).with(@foobar_uri, :environment => @environment, :links => :manage).returns nil
+      Puppet::FileServing::Metadata.indirection.expects(:find).with  do |uri, options|
+        expect(uri).to eq @foobar_uri
+        expect(options[:environment]).to eq @environment
+        expect(options[:links]).to eq :manage
+      end.returns nil
 
       @source.expects(:fail).raises RuntimeError
 
@@ -153,7 +182,7 @@ describe Puppet::Type.type(:file).attrclass(:source) do
   end
 
   describe "when copying the source values" do
-    before do
+    before :each do
       @resource = Puppet::Type.type(:file).new :path => @foobar
 
       @source = source.new(:resource => @resource)
@@ -161,6 +190,28 @@ describe Puppet::Type.type(:file).attrclass(:source) do
       @source.stubs(:metadata).returns @metadata
 
       Puppet.features.stubs(:root?).returns true
+    end
+
+    it "should not issue a deprecation warning if the source mode value is a Numeric" do
+      @metadata.stubs(:mode).returns 0173
+      if Puppet::Util::Platform.windows?
+        Puppet.expects(:deprecation_warning).with(regexp_matches(/Copying owner\/mode\/group from the source file on Windows is deprecated/)).at_least_once
+      else
+        Puppet.expects(:deprecation_warning).never
+      end
+
+      @source.copy_source_values
+    end
+
+    it "should not issue a deprecation warning if the source mode value is a String" do
+      @metadata.stubs(:mode).returns "173"
+      if Puppet::Util::Platform.windows?
+        Puppet.expects(:deprecation_warning).with(regexp_matches(/Copying owner\/mode\/group from the source file on Windows is deprecated/)).at_least_once
+      else
+        Puppet.expects(:deprecation_warning).never
+      end
+
+      @source.copy_source_values
     end
 
     it "should fail if there is no metadata" do
@@ -386,7 +437,7 @@ describe Puppet::Type.type(:file).attrclass(:source) do
           @source.stubs(:local?).returns false
           Puppet.expects(:deprecation_warning).with(deprecation_message).at_least_once
           @resource[:group] = 2
-          @resource[:mode] = 3
+          @resource[:mode] = "0003"
 
           @source.copy_source_values
         end
@@ -395,7 +446,7 @@ describe Puppet::Type.type(:file).attrclass(:source) do
           @source.stubs(:local?).returns false
           Puppet.expects(:deprecation_warning).with(deprecation_message).at_least_once
           @resource[:owner] = 1
-          @resource[:mode] = 3
+          @resource[:mode] = "0003"
 
           @source.copy_source_values
         end
@@ -414,7 +465,7 @@ describe Puppet::Type.type(:file).attrclass(:source) do
           Puppet.expects(:deprecation_warning).with(deprecation_message).never
           @resource[:owner] = 1
           @resource[:group] = 2
-          @resource[:mode] = 3
+          @resource[:mode] = "0003"
 
           @source.copy_source_values
         end

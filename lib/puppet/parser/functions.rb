@@ -17,12 +17,13 @@ module Puppet::Parser::Functions
   #
   # @api private
   def self.reset
-    @functions = Hash.new { |h,k| h[k] = {} }
-    @modules = Hash.new
+    @modules = {}
 
     # Runs a newfunction to create a function for each of the log levels
     Puppet::Util::Log.levels.each do |level|
-      newfunction(level, :doc => "Log a message on the server at level #{level.to_s}.") do |vals|
+      newfunction(level,
+                  :environment => Puppet.lookup(:root_environment),
+                  :doc => "Log a message on the server at level #{level.to_s}.") do |vals|
         send(level, vals.join(" "))
       end
     end
@@ -41,11 +42,22 @@ module Puppet::Parser::Functions
   # environment
   #
   # @api private
-  def self.environment_module(env = Puppet.lookup(:current_environment))
-    if env and ! env.is_a?(Puppet::Node::Environment)
-      env = Puppet::Node::Environment.new(env)
+  def self.environment_module(env)
+    @modules[env.name] ||= Module.new do
+      @metadata = {}
+
+      def self.all_function_info
+        @metadata
+      end
+
+      def self.get_function_info(name)
+        @metadata[name]
+      end
+
+      def self.add_function_info(name, info)
+        @metadata[name] = info
+      end
     end
-    @modules[env.name] ||= Module.new
   end
 
   # Create a new Puppet DSL function.
@@ -113,12 +125,16 @@ module Puppet::Parser::Functions
   #   zero or more arguments.  A function with an arity of 2 must be provided
   #   with exactly two arguments, no more and no less.  Added in Puppet 3.1.0.
   #
+  # @option options [Puppet::Node::Environment] :environment (nil) can
+  #   explicitly pass the environment we wanted the function added to.  Only used
+  #   to set logging functions in root environment
+  #
   # @return [Hash] describing the function.
   #
   # @api public
   def self.newfunction(name, options = {}, &block)
     name = name.intern
-    environment = Puppet.lookup(:current_environment)
+    environment = options[:environment] || Puppet.lookup(:current_environment)
 
     Puppet.warning "Overwriting previous definition for function #{name}" if get_function(name, environment)
 
@@ -132,11 +148,13 @@ module Puppet::Parser::Functions
     # the block must be installed as a method because it may use "return",
     # which is not allowed from procs.
     real_fname = "real_function_#{name}"
-    environment_module.send(:define_method, real_fname, &block)
+    environment_module(environment).send(:define_method, real_fname, &block)
 
     fname = "function_#{name}"
-    environment_module.send(:define_method, fname) do |*args|
-      Puppet::Util::Profiler.profile("Called #{name}") do
+    env_module = environment_module(environment)
+
+    env_module.send(:define_method, fname) do |*args|
+      Puppet::Util::Profiler.profile("Called #{name}", [:functions, name]) do
         if args[0].is_a? Array
           if arity >= 0 and args[0].size != arity
             raise ArgumentError, "#{name}(): Wrong number of arguments given (#{args[0].size} for #{arity})"
@@ -153,7 +171,8 @@ module Puppet::Parser::Functions
     func = {:arity => arity, :type => ftype, :name => fname}
     func[:doc] = options[:doc] if options[:doc]
 
-    add_function(name, func, environment)
+    env_module.add_function_info(name, func)
+
     func
   end
 
@@ -230,17 +249,14 @@ module Puppet::Parser::Functions
     private
 
     def merged_functions(environment)
-      @functions[Environment.root].merge(@functions[environment])
+      root = environment_module(Puppet.lookup(:root_environment))
+      env = environment_module(environment)
+
+      root.all_function_info.merge(env.all_function_info)
     end
 
     def get_function(name, environment)
-      name = name.intern
-      merged_functions(environment)[name]
-    end
-
-    def add_function(name, func, environment)
-      name = name.intern
-      @functions[environment][name] = func
+      environment_module(environment).get_function_info(name.intern) || environment_module(Puppet.lookup(:root_environment)).get_function_info(name.intern)
     end
   end
 end

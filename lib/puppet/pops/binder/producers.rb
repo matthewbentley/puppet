@@ -4,7 +4,7 @@
 # It is required that custom producers inherit from this producer (directly or indirectly).
 #
 # The selection of a Producer is typically performed by the Innjector when it configures itself
-# from a Bindings model where a {Puppet::Pops::Binder::Bindings::ProducerDescriptor} describes 
+# from a Bindings model where a {Puppet::Pops::Binder::Bindings::ProducerDescriptor} describes
 # which producer to use. The configuration uses this to create the concrete producer.
 # It is possible to describe that a particular producer class is to be used, and also to describe that
 # a custom producer (derived from Producer) should be used. This is available for both regular
@@ -62,8 +62,7 @@ module Puppet::Pops::Binder::Producers
         else
           raise ArgumentError, "Transformer must be a LambdaExpression" unless transformer_lambda.is_a?(Puppet::Pops::Model::LambdaExpression)
           raise ArgumentError, "Transformer lambda must take one argument; value." unless transformer_lambda.parameters.size() == 1
-          # NOTE: This depends on Puppet 3 AST Lambda
-          @transformer = Puppet::Pops::Model::AstTransformer.new().transform(transformer_lambda)
+          @transformer = Puppet::Pops::Parser::EvaluatingParser.new.closure(transformer_lambda, scope)
         end
       end
     end
@@ -111,7 +110,6 @@ module Puppet::Pops::Binder::Producers
     #
     def do_transformation(scope, produced_value)
       return produced_value unless transformer
-      produced_value = :undef if produced_value.nil?
       transformer.call(scope, produced_value)
     end
   end
@@ -299,14 +297,13 @@ module Puppet::Pops::Binder::Producers
     #
     def initialize(injector, binding, scope, options)
       super
-      expr = options[:expression]
-      raise ArgumentError, "Option 'expression' must be given to an EvaluatingProducer." unless expr
-      @expression = Puppet::Pops::Model::AstTransformer.new().transform(expr)
+      @expression = options[:expression]
+      raise ArgumentError, "Option 'expression' must be given to an EvaluatingProducer." unless @expression
     end
 
     # @api private
     def internal_produce(scope)
-      expression.evaluate(scope)
+      Puppet::Pops::Parser::EvaluatingParser.new.evaluate(scope, expression)
     end
   end
 
@@ -320,10 +317,10 @@ module Puppet::Pops::Binder::Producers
     attr_reader :name
 
     # @param injector [Puppet::Pops::Binder::Injector] The injector where the lookup originates
-    # @param binding [Puppet::Pops::Binder::Bindings::Binding, nil] The binding using this producer
+    # @param binder [Puppet::Pops::Binder::Bindings::Binding, nil] The binding using this producer
     # @param scope [Puppet::Parser::Scope] The scope to use for evaluation
     # @option options [Puppet::Pops::Model::LambdaExpression] :transformer (nil) a transformer of produced value
-    # @option options [Puppet::Pops::Types::PObjectType] :type The type to lookup
+    # @option options [Puppet::Pops::Types::PAnyType] :type The type to lookup
     # @option options [String] :name ('') The name to lookup
     # @api public
     #
@@ -349,12 +346,12 @@ module Puppet::Pops::Binder::Producers
     attr_reader :key
 
     # @param injector [Puppet::Pops::Binder::Injector] The injector where the lookup originates
-    # @param binding [Puppet::Pops::Binder::Bindings::Binding, nil] The binding using this producer
+    # @param binder [Puppet::Pops::Binder::Bindings::Binding, nil] The binding using this producer
     # @param scope [Puppet::Parser::Scope] The scope to use for evaluation
     # @option options [Puppet::Pops::Model::LambdaExpression] :transformer (nil) a transformer of produced value
-    # @option options [Puppet::Pops::Types::PObjectType] :type The type to lookup
+    # @option options [Puppet::Pops::Types::PAnyType] :type The type to lookup
     # @option options [String] :name ('') The name to lookup
-    # @option options [Puppet::Pops::Types::PObjectType] :key The key to lookup in the hash
+    # @option options [Puppet::Pops::Types::PAnyType] :key The key to lookup in the hash
     # @api public
     #
     def initialize(injector, binder, scope, options)
@@ -462,12 +459,12 @@ module Puppet::Pops::Binder::Producers
   end
 
   # This type of producer should only be created by the Injector.
-  # 
+  #
   # @api private
   #
   class AssistedInjectProducer < Producer
     # An Assisted Inject Producer is created when a lookup is made of a type that is
-    # not bound. It does not support a transformer lambda. 
+    # not bound. It does not support a transformer lambda.
     # @note This initializer has a different signature than all others. Do not use in regular logic.
     # @api private
     #
@@ -527,8 +524,8 @@ module Puppet::Pops::Binder::Producers
       @contributions_key = injector.key_factory.multibind_contributions(binding.id)
     end
 
-    # @param expected [Array<Puppet::Pops::Types::PObjectType>, Puppet::Pops::Types::PObjectType] expected type or types
-    # @param actual [Object, Puppet::Pops::Types::PObjectType> the actual value (or its type)
+    # @param expected [Array<Puppet::Pops::Types::PAnyType>, Puppet::Pops::Types::PAnyType] expected type or types
+    # @param actual [Object, Puppet::Pops::Types::PAnyType> the actual value (or its type)
     # @return [String] a formatted string for inclusion as detail in an error message
     # @api private
     #
@@ -557,7 +554,7 @@ module Puppet::Pops::Binder::Producers
   #   Collection accepts elements that comply with the array's element type, or the entire type (i.e. Array[element_type]).
   #   If the type is restrictive - e.g. Array[String] and an Array[String] is contributed, the result will not be type
   #   compliant without also using the `:flatten` option, and a type error will be raised. For an array with relaxed typing
-  #   i.e. Array[Data], it it valid to produce a result such as `['a', ['b', 'c'], 'd']` and no flattening is required
+  #   i.e. Array[Data], it is valid to produce a result such as `['a', ['b', 'c'], 'd']` and no flattening is required
   #   and no error is raised (but using the array needs to be aware of potential array, non-array entries.
   #   The use of the option `:flatten` controls how the result is flattened.
   #

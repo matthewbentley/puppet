@@ -53,7 +53,7 @@ them in order. THIS FEATURE IS DEPRECATED; use PuppetDB instead.
 
 USAGE
 -----
-puppet queue [-d|--debug] [-v|--verbose]
+puppet queue [-d|--debug] [--help] [-v|--verbose] [--version]
 
 
 DESCRIPTION
@@ -70,9 +70,9 @@ http://docs.puppetlabs.com/puppetdb/latest
 
 OPTIONS
 -------
-Note that any configuration parameter that's valid in the configuration
+Note that any setting that's valid in the configuration
 file is also a valid long argument. For example, 'server' is a valid
-configuration parameter, so you can specify '--server <servername>' as
+setting, so you can specify '--server <servername>' as
 an argument.
 
 See the configuration file documentation at
