@@ -31,6 +31,7 @@ class Puppet::Network::HTTP::Factory
 
     http = Net::HTTP.new(*args)
     http.use_ssl = site.use_ssl?
+    http.ssl_version = :TLSv1
     # Use configured timeout (#1176)
     http.read_timeout = Puppet[:configtimeout]
     http.open_timeout = Puppet[:configtimeout]
