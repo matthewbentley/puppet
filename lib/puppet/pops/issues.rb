@@ -380,7 +380,7 @@ module Puppet::Pops::Issues
 
   BAD_TYPE_SLICE_ARITY = issue :BAD_TYPE_SLICE_ARITY, :base_type, :min, :max, :actual do
     base_type_label = base_type.is_a?(String) ? base_type : label.a_an_uc(base_type)
-    if max == -1 || max == 1.0 / 0.0 # Infinity
+    if max == -1 || max == Float::INFINITY
       "#{base_type_label}[] accepts #{min} or more arguments. Got #{actual}"
     elsif max && max != min
       "#{base_type_label}[] accepts #{min} to #{max} arguments. Got #{actual}"
@@ -409,7 +409,7 @@ module Puppet::Pops::Issues
     "Illegal Class name in class reference. #{label.a_an_uc(name)} cannot be used where a String is expected"
   end
 
-  ILLEGAL_DEFINITION_NAME = hard_issue :ILLEGAL_DEFINTION_NAME, :name do
+  ILLEGAL_DEFINITION_NAME = hard_issue :ILLEGAL_DEFINITION_NAME, :name do
     "Unacceptable name. The name '#{name}' is unacceptable as the name of #{label.a_an(semantic)}"
   end
 
@@ -544,5 +544,9 @@ module Puppet::Pops::Issues
 
   MULTIPLE_ATTRIBUTES_UNFOLD = hard_issue :MULTIPLE_ATTRIBUTES_UNFOLD do
     "Unfolding of attributes from Hash can only be used once per resource body"
+  end
+
+  ILLEGAL_CATALOG_RELATED_EXPRESSION = hard_issue :ILLEGAL_CATALOG_RELATED_EXPRESSION do
+    "This #{label.label(semantic)} appears in a context where catalog related expressions are not allowed"
   end
 end

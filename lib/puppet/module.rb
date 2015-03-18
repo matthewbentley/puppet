@@ -128,10 +128,8 @@ class Puppet::Module
       # not have to support, but we have a reasonable number of releases that
       # don't use `version_requirement`. When we can deprecate this, we should.
       if attr == :dependencies
-        value.tap do |dependencies|
-          dependencies.each do |dep|
-            dep['version_requirement'] ||= dep['versionRequirement'] || '>= 0.0.0'
-          end
+        value.each do |dep|
+          dep['version_requirement'] ||= dep['versionRequirement'] || '>= 0.0.0'
         end
       end
 
@@ -140,7 +138,7 @@ class Puppet::Module
   end
 
   # Return the list of manifests matching the given glob pattern,
-  # defaulting to 'init.{pp,rb}' for empty modules.
+  # defaulting to 'init.pp' for empty modules.
   def match_manifests(rest)
     if rest
       wanted_manifests = wanted_manifests_from(rest)
@@ -150,14 +148,17 @@ class Puppet::Module
     end
 
     # (#4220) Always ensure init.pp in case class is defined there.
-    init_manifests = [manifest("init.pp"), manifest("init.rb")].compact
-    init_manifests + searched_manifests
+    init_manifest = manifest("init.pp")
+    if !init_manifest.nil? && !searched_manifests.include?(init_manifest)
+      searched_manifests.unshift(init_manifest)
+    end
+    searched_manifests
   end
 
   def all_manifests
     return [] unless Puppet::FileSystem.exist?(manifests)
 
-    Dir.glob(File.join(manifests, '**', '*.{rb,pp}'))
+    Dir.glob(File.join(manifests, '**', '*.pp'))
   end
 
   def metadata_file
@@ -208,19 +209,6 @@ class Puppet::Module
 
   def required_by
     environment.module_requirements[self.forge_name] || {}
-  end
-
-  def has_local_changes?
-    Puppet.deprecation_warning("This method is being removed.")
-    require 'puppet/module_tool/applications'
-    changes = Puppet::ModuleTool::Applications::Checksummer.run(path)
-    !changes.empty?
-  end
-
-  def local_changes
-    Puppet.deprecation_warning("This method is being removed.")
-    require 'puppet/module_tool/applications'
-    Puppet::ModuleTool::Applications::Checksummer.run(path)
   end
 
   # Identify and mark unmet dependencies.  A dependency will be marked unmet
@@ -307,11 +295,18 @@ class Puppet::Module
     raise IncompatibleModule, "Module #{self.name} is only compatible with Puppet version #{puppetversion}, not #{Puppet.version}"
   end
 
+  def ==(other)
+    self.name == other.name &&
+    self.version == other.version &&
+    self.path == other.path &&
+    self.environment == other.environment
+  end
+
   private
 
   def wanted_manifests_from(pattern)
     begin
-      extended = File.extname(pattern).empty? ? "#{pattern}.{pp,rb}" : pattern
+      extended = File.extname(pattern).empty? ? "#{pattern}.pp" : pattern
       relative_pattern = Puppet::FileSystem::PathPattern.relative(extended)
     rescue Puppet::FileSystem::PathPattern::InvalidPattern => error
       raise Puppet::Module::InvalidFilePattern.new(
@@ -328,12 +323,5 @@ class Puppet::Module
 
   def assert_validity
     raise InvalidName, "Invalid module name #{name}; module names must be alphanumeric (plus '-'), not '#{name}'" unless name =~ /^[-\w]+$/
-  end
-
-  def ==(other)
-    self.name == other.name &&
-    self.version == other.version &&
-    self.path == other.path &&
-    self.environment == other.environment
   end
 end

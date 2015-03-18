@@ -104,7 +104,7 @@ describe Puppet::Pops::Types::TypeParser do
     expect(the_type_parsed_from(tuple_t)).to be_the_type(tuple_t)
   end
 
-  it "parses tuple type with occurence constraint" do
+  it "parses tuple type with occurrence constraint" do
     tuple_t = types.tuple(Integer, String)
     types.constrain_size(tuple_t, 2, 5)
     expect(the_type_parsed_from(tuple_t)).to be_the_type(tuple_t)
@@ -212,7 +212,7 @@ describe Puppet::Pops::Types::TypeParser do
       calc.assignable?(actual, type) && calc.assignable?(type, actual)
     end
 
-    failure_message_for_should do |actual|
+    failure_message do |actual|
       "expected #{calc.string(type)}, but was #{calc.string(actual)}"
     end
   end

@@ -70,11 +70,7 @@ class Puppet::Network::HTTP::WEBrick
     # Make sure the settings are all ready for us.
     Puppet.settings.use(:main, :ssl, :application)
 
-    if Puppet.run_mode.master?
-      file = Puppet[:masterhttplog]
-    else
-      file = Puppet[:httplog]
-    end
+    file = Puppet[:masterhttplog]
 
     # open the log manually to prevent file descriptor leak
     file_io = ::File.open(file, "a+")
@@ -123,7 +119,6 @@ class Puppet::Network::HTTP::WEBrick
   def ssl_configuration
     @ssl_configuration ||= Puppet::SSL::Configuration.new(
       Puppet[:localcacert],
-      :ca_chain_file => Puppet[:ssl_server_ca_chain],
       :ca_auth_file  => Puppet[:ssl_server_ca_auth])
   end
 end

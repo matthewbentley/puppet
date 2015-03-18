@@ -3,7 +3,7 @@ require 'spec_helper'
 module EnvironmentsDefaultManifestsSpec
 describe "default manifests" do
 
-  shared_examples_for "puppet with default_manifest settings" do
+  context "puppet with default_manifest settings" do
     let(:confdir) { Puppet[:confdir] }
     let(:environmentpath) { File.expand_path("envdir", confdir) }
 
@@ -188,54 +188,6 @@ describe "default manifests" do
         expect { Puppet.initialize_settings }.to raise_error(Puppet::Settings::ValidationError, /default_manifest.*must be.*absolute.*when.*disable_per_environment_manifest.*true/)
       end
     end
-
-    context "in legacy environments" do
-      let(:environmentpath) { '' }
-      let(:manifestsdir) { File.expand_path("default_manifests", confdir) }
-      let(:legacy_manifestsdir) { File.expand_path('manifests', confdir) }
-
-      before(:each) do
-        FileUtils.mkdir_p(manifestsdir)
-
-        File.open(File.join(confdir, "puppet.conf"), "w") do |f|
-          f.puts(<<-EOF)
-  default_manifest=#{manifestsdir}
-  disable_per_environment_manifest=true
-  manifest=#{legacy_manifestsdir}
-          EOF
-        end
-
-        File.open(File.join(manifestsdir, "site.pp"), "w") do |f|
-          f.puts("notify { 'ManifestFromAbsoluteDefaultManifest': }")
-        end
-      end
-
-      it "has no effect on compilation" do
-        FileUtils.mkdir_p(legacy_manifestsdir)
-
-        File.open(File.join(legacy_manifestsdir, "site.pp"), "w") do |f|
-          f.puts("notify { 'ManifestFromLegacy': }")
-        end
-
-        expect(a_catalog_compiled_for_environment('testing')).to(
-          include_resource('Notify[ManifestFromLegacy]')
-        )
-      end
-    end
-  end
-
-  describe 'using future parser' do
-    before :each do
-      Puppet[:parser] = 'future'
-    end
-    it_behaves_like 'puppet with default_manifest settings'
-  end
-
-  describe 'using current parser' do
-    before :each do
-      Puppet[:parser] = 'current'
-    end
-    it_behaves_like 'puppet with default_manifest settings'
   end
 
   RSpec::Matchers.define :include_resource do |expected|
@@ -243,11 +195,11 @@ describe "default manifests" do
       actual.resources.map(&:ref).include?(expected)
     end
 
-    def failure_message_for_should
+    def failure_message
       "expected #{@actual.resources.map(&:ref)} to include #{expected}"
     end
 
-    def failure_message_for_should_not
+    def failure_message_when_negated
       "expected #{@actual.resources.map(&:ref)} not to include #{expected}"
     end
   end

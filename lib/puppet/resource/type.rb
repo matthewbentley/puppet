@@ -1,10 +1,7 @@
 require 'puppet/parser'
 require 'puppet/util/warnings'
 require 'puppet/util/errors'
-require 'puppet/util/inline_docs'
 require 'puppet/parser/ast/leaf'
-require 'puppet/parser/ast/block_expression'
-require 'puppet/dsl'
 
 # Puppet::Resource::Type represents nodes, classes and defined types.
 #
@@ -16,7 +13,6 @@ require 'puppet/dsl'
 # @api public
 class Puppet::Resource::Type
   Puppet::ResourceType = self
-  include Puppet::Util::InlineDocs
   include Puppet::Util::Warnings
   include Puppet::Util::Errors
 
@@ -30,7 +26,7 @@ class Puppet::Resource::Type
   }
   RESOURCE_EXTERNAL_NAMES_TO_KINDS = RESOURCE_KINDS_TO_EXTERNAL_NAMES.invert
 
-  attr_accessor :file, :line, :doc, :code, :ruby_code, :parent, :resource_type_collection
+  attr_accessor :file, :line, :doc, :code, :parent, :resource_type_collection
   attr_reader :namespace, :arguments, :behaves_like, :module_name
 
   # Map from argument (aka parameter) names to Puppet Type
@@ -66,11 +62,6 @@ class Puppet::Resource::Type
     data[:arguments] = data.delete(:parameters)
 
     new(type, name, data)
-  end
-
-  def self.from_pson(data)
-    Puppet.deprecation_warning("from_pson is being removed in favour of from_data_hash.")
-    self.from_data_hash(data)
   end
 
   def to_data_hash
@@ -127,8 +118,6 @@ class Puppet::Resource::Type
         code.safeevaluate(scope)
       end
     end
-
-    evaluate_ruby_code(resource, scope) if ruby_code
   end
 
   def initialize(type, name, options = {})
@@ -187,7 +176,6 @@ class Puppet::Resource::Type
     end
 
     self.code = Puppet::Parser::ParserFactory.code_merger.concatenate([self, other])
-#    self.code = self.code.sequence_with(other.code)
   end
 
   # Make an instance of the resource type, and place it in the catalog
@@ -247,34 +235,11 @@ class Puppet::Resource::Type
     end
   end
 
-  # MQR TODO:
-  #
-  # The change(s) introduced by the fix for #4270 are mostly silly & should be
-  # removed, though we didn't realize it at the time.  If it can be established/
-  # ensured that nodes never call parent_type and that resource_types are always
-  # (as they should be) members of exactly one resource_type_collection the
-  # following method could / should be replaced with:
-  #
-  # def parent_type
-  #   @parent_type ||= parent && (
-  #     resource_type_collection.find_or_load([name],parent,type.to_sym) ||
-  #     fail Puppet::ParseError, "Could not find parent resource type '#{parent}' of type #{type} in #{resource_type_collection.environment}"
-  #   )
-  # end
-  #
-  # ...and then the rest of the changes around passing in scope reverted.
-  #
   def parent_type(scope = nil)
     return nil unless parent
 
-    unless @parent_type
-      raise "Must pass scope to parent_type when called first time" unless scope
-      unless @parent_type = scope.environment.known_resource_types.send("find_#{type}", [name], parent)
-        fail Puppet::ParseError, "Could not find parent resource type '#{parent}' of type #{type} in #{scope.environment}"
-      end
-    end
-
-    @parent_type
+    @parent_type ||= scope.environment.known_resource_types.send("find_#{type}", parent) ||
+      fail(Puppet::ParseError, "Could not find parent resource type '#{parent}' of type #{type} in #{scope.environment}")
   end
 
   # Set any arguments passed by the resource as variables in the scope.
@@ -335,13 +300,11 @@ class Puppet::Resource::Type
 
   # Sets the argument name to Puppet Type hash used for type checking.
   # Names must correspond to available arguments (they must be defined first).
-  # Arguments not mentioned will not be type-checked. Only supported when parser == "future"
+  # Arguments not mentioned will not be type-checked.
   #
   def set_argument_types(name_to_type_hash)
     @argument_types = {}
-    # Stop here if not running under future parser, the rest requires pops to be initialized
-    # and that the type system is available
-    return unless Puppet[:parser] == 'future' && name_to_type_hash
+    return unless name_to_type_hash
     name_to_type_hash.each do |name, t|
       # catch internal errors
       unless @arguments.include?(name)
@@ -369,10 +332,6 @@ class Puppet::Resource::Type
     return unless klass = parent_type(resource.scope) and parent_resource = resource.scope.compiler.catalog.resource(:class, klass.name) || resource.scope.compiler.catalog.resource(:node, klass.name)
     parent_resource.evaluate unless parent_resource.evaluated?
     parent_scope(resource.scope, klass)
-  end
-
-  def evaluate_ruby_code(resource, scope)
-    Puppet::DSL::ResourceAPI.new(resource, scope, ruby_code).evaluate
   end
 
   # Split an fq name into a namespace and name

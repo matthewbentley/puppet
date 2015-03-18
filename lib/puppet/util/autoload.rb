@@ -7,13 +7,10 @@ require 'puppet/util/methodhelper'
 class Puppet::Util::Autoload
   include Puppet::Util::MethodHelper
 
-  @autoloaders = {}
   @loaded = {}
 
   class << self
-    attr_reader :autoloaders
     attr_accessor :loaded
-    private :autoloaders, :loaded
 
     def gem_source
       @gem_source ||= Puppet::Util::RubyGems::Source.new
@@ -59,7 +56,7 @@ class Puppet::Util::Autoload
       return false unless file
       begin
         mark_loaded(name, file)
-        Kernel.load file, @wrap
+        Kernel.load file
         return true
       rescue SystemExit,NoMemoryError
         raise
@@ -70,11 +67,11 @@ class Puppet::Util::Autoload
       end
     end
 
-    def loadall(path)
+    def loadall(path, env = nil)
       # Load every instance of everything we can find.
-      files_to_load(path).each do |file|
+      files_to_load(path, env).each do |file|
         name = file.chomp(".rb")
-        load_file(name, nil) unless loaded?(name)
+        load_file(name, env) unless loaded?(name)
       end
     end
 
@@ -90,10 +87,10 @@ class Puppet::Util::Autoload
       path and File.join(path, name)
     end
 
-    def files_to_load(path)
+    def files_to_load(path, env = nil)
       # loadall is called when new module gets registered, reset dir cache in this case
-      @search_directories[nil] = nil
-      search_directories(nil).map {|dir| files_in_dir(dir, path) }.flatten.uniq
+      @search_directories[env] = nil
+      search_directories(env).map {|dir| files_in_dir(dir, path) }.flatten.uniq
     end
 
     def files_in_dir(dir, path)
@@ -152,7 +149,7 @@ class Puppet::Util::Autoload
       # See the comments in #module_directories above.  Basically, we need to be careful not to try to access the
       # libdir before we know for sure that all of the settings have been initialized (e.g., during bootstrapping).
       if (Puppet.settings.app_defaults_initialized?)
-        Puppet[:libdir].split(File::PATH_SEPARATOR)
+        [Puppet[:libdir]]
       else
         []
       end
@@ -190,21 +187,14 @@ class Puppet::Util::Autoload
     end
   end
 
-  # Send [] and []= to the @autoloaders hash
-  Puppet::Util.classproxy self, :autoloaders, "[]", "[]="
-
-  attr_accessor :object, :path, :objwarn, :wrap
+  attr_accessor :object, :path
 
   def initialize(obj, path, options = {})
     @path = path.to_s
     raise ArgumentError, "Autoload paths cannot be fully qualified" if Puppet::Util.absolute_path?(@path)
     @object = obj
 
-    self.class[obj] = self
-
     set_options(options)
-
-    @wrap = true unless defined?(@wrap)
   end
 
   def load(name, env = nil)
@@ -221,8 +211,8 @@ class Puppet::Util::Autoload
   #
   # This uses require, rather than load, so that already-loaded files don't get
   # reloaded unnecessarily.
-  def loadall
-    self.class.loadall(@path)
+  def loadall(env = nil)
+    self.class.loadall(@path, env)
   end
 
   def loaded?(name)

@@ -4,6 +4,7 @@ require 'tempfile'
 
 require 'puppet/util/checksums'
 require 'puppet/network/http'
+require 'puppet/network/http/api/indirected_routes'
 require 'puppet/network/http/compression'
 
 module Puppet
@@ -208,11 +209,11 @@ module Puppet
 
     def get_from_source(source_or_content, &block)
       source = source_or_content.metadata.source
-      request = Puppet::Indirector::Request.new(:file_content, :find, source, nil, :environment => resource.catalog.environment)
+      request = Puppet::Indirector::Request.new(:file_content, :find, source, nil, :environment => resource.catalog.environment_instance)
 
       request.do_request(:fileserver) do |req|
         connection = Puppet::Network::HttpPool.http_instance(req.server, req.port)
-        connection.request_get(Puppet::Network::HTTP::API::V1.indirection2uri(req), add_accept_encoding({"Accept" => "raw"}), &block)
+        connection.request_get(Puppet::Network::HTTP::API::IndirectedRoutes.request_to_uri(req), add_accept_encoding({"Accept" => "raw"}), &block)
       end
     end
 

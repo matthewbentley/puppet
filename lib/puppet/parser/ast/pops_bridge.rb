@@ -144,7 +144,7 @@ class Puppet::Parser::AST::PopsBridge
         # when running tests that run a partial setup.
         # This is bad if the logic is trying to compile, but a warning can not be issues since it is a normal
         # use case that there is no scope when requesting the type in order to just get the parameters.
-        Puppet.debug("Instantiating Resource with type checked parameters - scope is missing, skipping type checking.")
+        Puppet.debug {"Instantiating Resource with type checked parameters - scope is missing, skipping type checking."}
         nil
       end
       scope
@@ -192,7 +192,7 @@ class Puppet::Parser::AST::PopsBridge
     end
 
     # Propagates a found Function to the appropriate loader.
-    # This is for 4x future-evaluator/loader
+    # This is for 4x evaluator/loader
     #
     def instantiate_FunctionDefinition(function_definition, modname)
       loaders = (Puppet.lookup(:loaders) { nil })

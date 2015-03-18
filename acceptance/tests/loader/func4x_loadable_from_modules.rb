@@ -35,10 +35,10 @@ agents.each do |agent|
   # Setting user/group ensures that when puppet apply's Configurer use()'s the
   # settings, that it doesn't default to owning them as root, which can have an
   # impact on following tests.
+  on agent, puppet("config", "set", "environmentpath", envs_path, "--section", "main", "--config", puppetconf)
   on agent, puppet("config", "set", "user", user, "--section", "main", "--config", puppetconf)
   on agent, puppet("config", "set", "group", group, "--section", "main", "--config", puppetconf)
   on agent, puppet("config", "set", "environment", "dev", "--section", "user", "--config", puppetconf)
-  on agent, puppet("config", "set", "environmentpath", envs_path, "--section", "main", "--config", puppetconf)
 
   # Where the functions in the written modules should go
   helloworld_functions = 'helloworld/lib/puppet/functions/helloworld'
@@ -73,7 +73,7 @@ class helloworld {
 SOURCE
 
   # Run apply to generate the file with the output
-  on agent, puppet('apply', '--parser', 'future', '-e', "'include helloworld'", '--config', puppetconf)
+  on agent, puppet('apply', '-e', "'include helloworld'", '--config', puppetconf)
 
   # Assert that the file was written with the generated content
   on(agent, "cat #{File.join(target_path, 'result.txt')}") do

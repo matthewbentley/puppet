@@ -6,7 +6,7 @@ require 'puppet/property/ordered_list'
 require 'puppet/property/keyvalue'
 
 module Puppet
-  newtype(:user) do
+  Type.newtype(:user) do
     @doc = "Manage users.  This type is mostly built to manage system
       users, so it is lacking some features useful for managing normal
       users.
@@ -56,6 +56,9 @@ module Puppet
 
     feature :manages_shell,
       "The provider allows for setting shell and validates if possible"
+
+    feature :manages_loginclass,
+      "The provider can manage the login class for a user."
 
     newproperty(:ensure, :parent => Puppet::Property::Ensure) do
       newvalue(:present, :event => :user_created) do
@@ -326,8 +329,8 @@ module Puppet
     newproperty(:expiry, :required_features => :manages_expiry) do
       desc "The expiry date for this user. Must be provided in
            a zero-padded YYYY-MM-DD format --- e.g. 2010-02-19.
-           If you want to make sure the user account does never
-           expire, you can pass the special value `absent`."
+           If you want to ensure the user account never expires,
+           you can pass the special value `absent`."
 
       newvalues :absent
       newvalues /^\d{4}-\d{2}-\d{2}$/
@@ -635,6 +638,16 @@ module Puppet
           entry.gsub!(/^~\//, "#{home}/")
           entry.gsub!(/^%h\//, "#{home}/")
           entry
+        end
+      end
+    end
+
+    newproperty(:loginclass, :required_features => :manages_loginclass) do
+      desc "The name of login class to which the user belongs."
+
+      validate do |value|
+        if value =~ /^\d+$/
+          raise ArgumentError, "Class name must be provided."
         end
       end
     end

@@ -5,6 +5,7 @@ require 'puppet/resource/catalog'
 require 'puppet/util/errors'
 
 require 'puppet/resource/type_collection_helper'
+require 'puppet/loaders'
 
 # Maintain a graph of scopes, along with a bunch of data
 # about the individual catalog we're compiling.
@@ -20,13 +21,12 @@ class Puppet::Parser::Compiler
     $env_module_directories = nil
     node.environment.check_for_reparse
 
-    if node.environment.conflicting_manifest_settings?
+    errors = node.environment.validation_errors
+    if !errors.empty?
+      errors.each { |e| Puppet.err(e) } if errors.size > 1
       errmsg = [
-        "The 'disable_per_environment_manifest' setting is true, and this '#{node.environment}'",
-        "has an environment.conf manifest that conflicts with the 'default_manifest' setting.",
-        "Compilation has been halted in order to avoid running a catalog which may be using",
-        "unexpected manifests. For more information, see",
-        "http://docs.puppetlabs.com/puppet/latest/reference/environments.html",
+        "Compilation has been halted because: #{errors.first}",
+        "For more information, see http://docs.puppetlabs.com/puppet/latest/reference/environments.html",
       ]
       raise(Puppet::Error, errmsg.join(' '))
     end
@@ -122,11 +122,7 @@ class Puppet::Parser::Compiler
 
       Puppet::Util::Profiler.profile("Compile: Created settings scope", [:compiler, :create_settings_scope]) { create_settings_scope }
 
-      if is_binder_active?
-        # create injector, if not already created - this is for 3x that does not trigger
-        # lazy loading of injector via context
-        Puppet::Util::Profiler.profile("Compile: Created injector", [:compiler, :create_injector]) { injector }
-      end
+      activate_binder
 
       Puppet::Util::Profiler.profile("Compile: Evaluated main", [:compiler, :evaluate_main]) { evaluate_main }
 
@@ -150,19 +146,12 @@ class Puppet::Parser::Compiler
 
   # Constructs the overrides for the context
   def context_overrides()
-    if Puppet[:parser] == 'future'
-      require 'puppet/loaders'
-      {
-        :current_environment => environment,
-        :global_scope => @topscope,             # 4x placeholder for new global scope
-        :loaders  => lambda {|| loaders() },    # 4x loaders
-        :injector => lambda {|| injector() }    # 4x API - via context instead of via compiler
-      }
-    else
-      {
-        :current_environment => environment,
-      }
-    end
+    {
+      :current_environment => environment,
+      :global_scope => @topscope,             # 4x placeholder for new global scope
+      :loaders  => lambda {|| loaders() },    # 4x loaders
+      :injector => lambda {|| injector() }    # 4x API - via context instead of via compiler
+    }
   end
 
   def_delegator :@collections, :delete, :delete_collection
@@ -195,18 +184,12 @@ class Puppet::Parser::Compiler
     evaluate_classes(classes_without_params, @node_scope || topscope)
   end
 
-  # Evaluate each specified class in turn.  If there are any classes we can't
-  # find, raise an error.  This method really just creates resource objects
+  # Evaluates each specified class in turn. If there are any classes that 
+  # can't be found, an error is raised. This method really just creates resource objects
   # that point back to the classes, and then the resources are themselves
   # evaluated later in the process.
   #
-  # Sometimes we evaluate classes with a fully qualified name already, in which
-  # case, we tell scope.find_hostclass we've pre-qualified the name so it
-  # doesn't need to search its namespaces again.  This gets around a weird
-  # edge case of duplicate class names, one at top scope and one nested in our
-  # namespace and the wrong one (or both!) getting selected. See ticket #13349
-  # for more detail.  --jeffweiss 26 apr 2012
-  def evaluate_classes(classes, scope, lazy_evaluate = true, fqname = false)
+  def evaluate_classes(classes, scope, lazy_evaluate = true)
     raise Puppet::DevError, "No source for scope passed to evaluate_classes" unless scope.source
     class_parameters = nil
     # if we are a param class, save the classes hash
@@ -217,7 +200,7 @@ class Puppet::Parser::Compiler
     end
 
     hostclasses = classes.collect do |name|
-      scope.find_hostclass(name, :assume_fqname => fqname) or raise Puppet::Error, "Could not find class #{name} for #{node.name}"
+      scope.find_hostclass(name) or raise Puppet::Error, "Could not find class #{name} for #{node.name}"
     end
 
     if class_parameters
@@ -293,19 +276,16 @@ class Puppet::Parser::Compiler
 
   # Answers if Puppet Binder should be active or not, and if it should and is not active, then it is activated.
   # @return [Boolean] true if the Puppet Binder should be activated
-  def is_binder_active?
-    should_be_active = Puppet[:binder] || Puppet[:parser] == 'future'
-    if should_be_active
-      # TODO: this should be in a central place, not just for ParserFactory anymore...
-      Puppet::Parser::ParserFactory.assert_rgen_installed()
-      @@binder_loaded ||= false
-      unless @@binder_loaded
-        require 'puppet/pops'
-        require 'puppetx'
-        @@binder_loaded = true
-      end
+  def activate_binder
+    # TODO: this should be in a central place
+    Puppet::Parser::ParserFactory.assert_rgen_installed()
+    @@binder_loaded ||= false
+    unless @@binder_loaded
+      require 'puppet/pops'
+      require 'puppet/plugins/configuration'
+      @@binder_loaded = true
     end
-    should_be_active
+    true
   end
 
   private
@@ -415,7 +395,7 @@ class Puppet::Parser::Compiler
 
   # Find and evaluate our main object, if possible.
   def evaluate_main
-    @main = known_resource_types.find_hostclass([""], "") || known_resource_types.add(Puppet::Resource::Type.new(:hostclass, ""))
+    @main = known_resource_types.find_hostclass("") || known_resource_types.add(Puppet::Resource::Type.new(:hostclass, ""))
     @topscope.source = @main
     @main_resource = Puppet::Parser::Resource.new("class", :main, :scope => @topscope, :source => @main)
     @topscope.resource = @main_resource
@@ -443,16 +423,12 @@ class Puppet::Parser::Compiler
     end
   end
 
-  # Make sure we don't have any remaining collections that specifically
-  # look for resources, because we want to consider those to be
-  # parse errors.
+  # Make sure there are no remaining collections that are waiting for
+  # resources that have not yet been instantiated. If this occurs it
+  # is an error (missing resource - it could not be realized).
+  #
   def fail_on_unevaluated_resource_collections
-    if Puppet[:parser] == 'future'
-      remaining = @collections.collect(&:unresolved_resources).flatten.compact
-    else
-      remaining = @collections.collect(&:resources).flatten.compact
-    end
-
+    remaining = @collections.collect(&:unresolved_resources).flatten.compact
     if !remaining.empty?
       raise Puppet::ParseError, "Failed to realize virtual resources #{remaining.join(', ')}"
     end
@@ -544,7 +520,7 @@ class Puppet::Parser::Compiler
     @topscope = Puppet::Parser::Scope.new(self)
 
     # Need to compute overrides here, and remember them, because we are about to
-    # enter the magic zone of known_resource_types and intial import.
+    # enter the magic zone of known_resource_types and initial import.
     # Expensive entries in the context are bound lazily.
     @context_overrides = context_overrides()
 
@@ -579,13 +555,9 @@ class Puppet::Parser::Compiler
     # These might be nil.
     catalog.client_version = node.parameters["clientversion"]
     catalog.server_version = node.parameters["serverversion"]
-    if Puppet[:trusted_node_data]
-      @topscope.set_trusted(node.trusted_data)
-    end
-    if(Puppet[:immutable_node_data])
-      facts_hash = node.facts.nil? ? {} : node.facts.values
-      @topscope.set_facts(facts_hash)
-    end
+    @topscope.set_trusted(node.trusted_data)
+    facts_hash = node.facts.nil? ? {} : node.facts.values
+    @topscope.set_facts(facts_hash)
   end
 
   def create_settings_scope
@@ -626,8 +598,8 @@ class Puppet::Parser::Compiler
   end
 
   def assert_binder_active
-    unless is_binder_active?
-      raise ArgumentError, "The Puppet Binder is only available when either '--binder true' or '--parser future' is used"
+    unless activate_binder()
+      raise Puppet::DevError, "The Puppet Binder was not activated"
     end
   end
 end

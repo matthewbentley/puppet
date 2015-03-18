@@ -30,10 +30,6 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
   include Puppet::Pops::Evaluator::Runtime3Support
   include Puppet::Pops::Evaluator::ExternalSyntaxSupport
 
-  # This constant is not defined as Float::INFINITY in Ruby 1.8.7 (but is available in later version
-  # Refactor when support is dropped for Ruby 1.8.7.
-  #
-  INFINITY = 1.0 / 0.0
   EMPTY_STRING = ''.freeze
   COMMA_SEPARATOR = ', '.freeze
 
@@ -53,9 +49,6 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
 
     @@compare_operator     ||= Puppet::Pops::Evaluator::CompareOperator.new()
     @@relationship_operator ||= Puppet::Pops::Evaluator::RelationshipOperator.new()
-
-    # Initialize the runtime module
-    Puppet::Pops::Evaluator::Runtime3Support.instance_method(:initialize).bind(self).call()
   end
 
   # @api private
@@ -328,7 +321,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
       rescue ZeroDivisionError => e
         fail(Issues::DIV_BY_ZERO, right_o)
       end
-      if result == INFINITY || result == -INFINITY
+      if result == Float::INFINITY || result == -Float::INFINITY
         fail(Issues::RESULT_IS_INFINITY, left_o, {:operator => operator})
       end
       result
@@ -781,7 +774,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
     name = o.functor_expr.right_expr
     unless name.is_a? Puppet::Pops::Model::QualifiedName
       fail(Issues::ILLEGAL_EXPRESSION, o.functor_expr, {:feature=>'function name', :container => o})
-    end 
+    end
     name = name.value # the string function name
 
     evaluated_arguments = unfold([receiver], o.arguments || [], scope)

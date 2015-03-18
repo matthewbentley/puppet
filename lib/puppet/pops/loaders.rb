@@ -86,7 +86,14 @@ class Puppet::Pops::Loaders
     # The environment is not a namespace, so give it a nil "module_name"
     module_name = nil
     loader_name = "environment:#{environment.name}"
-    loader = Puppet::Pops::Loader::SimpleEnvironmentLoader.new(puppet_system_loader, loader_name)
+    env_conf = Puppet.lookup(:environments).get_conf(environment.name)
+    if env_conf.nil? || !env_conf.is_a?(Puppet::Settings::EnvironmentConf)
+      # Not a real directory environment, cannot work as a module TODO: Drop when legacy env are dropped?
+      loader = Puppet::Pops::Loader::SimpleEnvironmentLoader.new(puppet_system_loader, loader_name)
+    else
+      # View the environment as a module to allow loading from it - this module is always called 'environment'
+      loader = Puppet::Pops::Loader::ModuleLoaders.module_loader_from(puppet_system_loader, self, 'environment', env_conf.path_to_env)
+    end
 
     # An environment has a module path even if it has a null loader
     configure_loaders_for_modules(loader, environment)
@@ -213,7 +220,7 @@ class Puppet::Pops::Loaders
     private
 
     def create_loader_with_all_modules_visible(from_module_data)
-      Puppet.debug("ModuleLoader: module '#{from_module_data.name}' has unknown dependencies - it will have all other modules visible")
+      Puppet.debug{"ModuleLoader: module '#{from_module_data.name}' has unknown dependencies - it will have all other modules visible"}
 
       Puppet::Pops::Loader::DependencyLoader.new(from_module_data.public_loader, from_module_data.name, all_module_loaders())
     end

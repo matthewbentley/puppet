@@ -210,15 +210,16 @@ class Puppet::Transaction
 
   # Evaluate a single resource.
   def eval_resource(resource, ancestor = nil)
+    propagate_failure(resource)
     if skip?(resource)
       resource_status(resource).skipped = true
+      resource.debug("Resource is being skipped, unscheduling all events")
+      event_manager.dequeue_all_events_for_resource(resource)
     else
       resource_status(resource).scheduled = true
       apply(resource, ancestor)
+      event_manager.process_events(resource)
     end
-
-    # Check to see if there are any events queued for this resource
-    event_manager.process_events(resource)
   end
 
   def failed?(resource)
@@ -227,30 +228,21 @@ class Puppet::Transaction
 
   # Does this resource have any failed dependencies?
   def failed_dependencies?(resource)
-    # First make sure there are no failed dependencies.  To do this,
-    # we check for failures in any of the vertexes above us.  It's not
-    # enough to check the immediate dependencies, which is why we use
-    # a tree from the reversed graph.
-    found_failed = false
+    s = resource_status(resource) and s.dependency_failed?
+  end
 
-
-    # When we introduced the :whit into the graph, to reduce the combinatorial
-    # explosion of edges, we also ended up reporting failures for containers
-    # like class and stage.  This is undesirable; while just skipping the
-    # output isn't perfect, it is RC-safe. --daniel 2011-06-07
-    suppress_report = (resource.class == Puppet::Type.type(:whit))
-
-    relationship_graph.dependencies(resource).each do |dep|
-      next unless failed?(dep)
-      found_failed = true
-
-      # See above. --daniel 2011-06-06
-      unless suppress_report then
-        resource.notice "Dependency #{dep} has failures: #{resource_status(dep).failed}"
+  # We need to know if a resource has any failed dependencies before
+  # we try to process it. We keep track of this by keeping a
+  # `dependency_failed` flag on each resource and incrementally
+  # computing it as the OR of the flag of each dependency. We have to
+  # do this as-we-go instead of up-front at failure time because the
+  # graph may be mutated as we walk it.
+  def propagate_failure(resource)
+    relationship_graph.direct_dependencies_of(resource).each do |dep|
+      if (s = resource_status(dep)) and (s.failed? || s.dependency_failed?)
+        resource_status(resource).dependency_failed = true
       end
     end
-
-    found_failed
   end
 
   # A general method for recursively generating new resources from a
@@ -284,7 +276,7 @@ class Puppet::Transaction
 
   def resources_by_provider(type_name, provider_name)
     unless @resources_by_provider
-      @resources_by_provider = Hash.new { |h, k| h[k] = Hash.new { |h, k| h[k] = {} } }
+      @resources_by_provider = Hash.new { |h, k| h[k] = Hash.new { |h1, k1| h1[k1] = {} } }
 
       @catalog.vertices.each do |resource|
         if resource.class.attrclass(:provider)
@@ -305,7 +297,7 @@ class Puppet::Transaction
     Puppet.debug "Prefetching #{provider_class.name} resources for #{type_name}"
     begin
       provider_class.prefetch(resources)
-    rescue => detail
+    rescue LoadError, Puppet::MissingCommand => detail
       Puppet.log_exception(detail, "Could not prefetch #{type_name} provider '#{provider_class.name}': #{detail}")
     end
     @prefetched_providers[type_name][provider_class.name] = true
@@ -350,13 +342,6 @@ class Puppet::Transaction
     resource.appliable_to_host? && resource.appliable_to_device?
   end
 
-  def handle_qualified_tags( qualified )
-    # The default behavior of Puppet::Util::Tagging is
-    # to split qualified tags into parts. That would cause
-    # qualified tags to match too broadly here.
-    return
-  end
-
   # Is this resource tagged appropriately?
   def missing_tags?(resource)
     return false if ignore_tags?
@@ -364,6 +349,14 @@ class Puppet::Transaction
 
     not resource.tagged?(*tags)
   end
+
+  # These two methods are only made public to enable the existing spec tests to run
+  # under rspec 3 (apparently rspec 2 didn't enforce access controls?). Please do not
+  # treat these as part of a public API.
+  # Possible future improvement: rewrite to not require access to private methods.
+  public :skip?
+  public :missing_tags?
+
 end
 
 require 'puppet/transaction/report'
