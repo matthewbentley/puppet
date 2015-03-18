@@ -31,7 +31,7 @@ class Puppet::Parser::Compiler
       raise(Puppet::Error, errmsg.join(' '))
     end
 
-    new(node).compile.to_resource
+    new(node).compile {|resulting_catalog| resulting_catalog.to_resource }
   rescue => detail
     message = "#{detail} on node #{node.name}"
     Puppet.log_exception(detail, message)
@@ -140,7 +140,11 @@ class Puppet::Parser::Compiler
 
       fail_on_unevaluated
 
-      @catalog
+      if block_given?
+        yield @catalog
+      else
+        @catalog
+      end
     end
   end
 
@@ -443,7 +447,11 @@ class Puppet::Parser::Compiler
   # look for resources, because we want to consider those to be
   # parse errors.
   def fail_on_unevaluated_resource_collections
-    remaining = @collections.collect(&:resources).flatten.compact
+    if Puppet[:parser] == 'future'
+      remaining = @collections.collect(&:unresolved_resources).flatten.compact
+    else
+      remaining = @collections.collect(&:resources).flatten.compact
+    end
 
     if !remaining.empty?
       raise Puppet::ParseError, "Failed to realize virtual resources #{remaining.join(', ')}"

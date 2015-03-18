@@ -25,6 +25,21 @@ module Puppet::Environments
     end
   end
 
+  # Provide any common methods that loaders should have. It requires that any
+  # classes that include this module implement get
+  # @api private
+  module EnvironmentLoader
+    # @!macro loader_get_or_fail
+    def get!(name)
+      environment = get(name)
+      if environment
+        environment
+      else
+        raise EnvironmentNotFound, name
+      end
+    end
+  end
+
   # @!macro [new] loader_search_paths
   #   A list of indicators of where the loader is getting its environments from.
   #   @return [Array<String>] The URIs of the load locations
@@ -62,6 +77,7 @@ module Puppet::Environments
   # @api private
   class Static
     include EnvironmentCreator
+    include EnvironmentLoader
 
     def initialize(*environments)
       @environments = environments
@@ -82,14 +98,6 @@ module Puppet::Environments
       @environments.find do |env|
         env.name == name.intern
       end
-    end
-
-    # @!macro loader_get_or_fail
-    def get!(name)
-      if !environment = get(name)
-        raise EnvironmentNotFound, name
-      end
-      environment
     end
 
     # Returns a basic environment configuration object tied to the environment's
@@ -186,6 +194,8 @@ module Puppet::Environments
   #
   # @api private
   class Directories
+    include EnvironmentLoader
+
     def initialize(environment_dir, global_module_path)
       @environment_dir = environment_dir
       @global_module_path = global_module_path
@@ -212,51 +222,49 @@ module Puppet::Environments
     def list
       valid_directories.collect do |envdir|
         name = Puppet::FileSystem.basename_string(envdir).intern
-
-        setting_values = Puppet.settings.values(name, Puppet.settings.preferred_run_mode)
-        env = Puppet::Node::Environment.create(
-          name,
-          Puppet::Node::Environment.split_path(setting_values.interpolate(:modulepath)),
-          setting_values.interpolate(:manifest),
-          setting_values.interpolate(:config_version)
-        )
-        env.watching = false
-        env
+        create_environment(name)
       end
     end
 
     # @!macro loader_get
     def get(name)
-      list.find { |env| env.name == name.intern }
-    end
-
-    # @!macro loader_get_or_fail
-    def get!(name)
-      if !environment = get(name)
-        raise EnvironmentNotFound, name
+      if valid_directory?(File.join(@environment_dir, name.to_s))
+        create_environment(name)
       end
-      environment
     end
 
     # @!macro loader_get_conf
     def get_conf(name)
-      valid_directories.each do |envdir|
-        envname = Puppet::FileSystem.basename_string(envdir)
-        if envname == name.to_s
-          return Puppet::Settings::EnvironmentConf.load_from(envdir, @global_module_path)
-        end
+      envdir = File.join(@environment_dir, name.to_s)
+      if valid_directory?(envdir)
+        return Puppet::Settings::EnvironmentConf.load_from(envdir, @global_module_path)
       end
       nil
     end
 
     private
 
+    def create_environment(name, setting_values = nil)
+      env_symbol = name.intern
+      setting_values = Puppet.settings.values(env_symbol, Puppet.settings.preferred_run_mode)
+      Puppet::Node::Environment.create(
+        env_symbol,
+        Puppet::Node::Environment.split_path(setting_values.interpolate(:modulepath)),
+        setting_values.interpolate(:manifest),
+        setting_values.interpolate(:config_version)
+      )
+    end
+
+    def valid_directory?(envdir)
+      name = Puppet::FileSystem.basename_string(envdir)
+      Puppet::FileSystem.directory?(envdir) &&
+         Puppet::Node::Environment.valid_name?(name)
+    end
+
     def valid_directories
       if Puppet::FileSystem.directory?(@environment_dir)
         Puppet::FileSystem.children(@environment_dir).select do |child|
-          name = Puppet::FileSystem.basename_string(child)
-          Puppet::FileSystem.directory?(child) &&
-             Puppet::Node::Environment.valid_name?(name)
+          valid_directory?(child)
         end
       else
         []
@@ -267,6 +275,8 @@ module Puppet::Environments
   # Combine together multiple loaders to act as one.
   # @api private
   class Combined
+    include EnvironmentLoader
+
     def initialize(*loaders)
       @loaders = loaders
     end
@@ -291,16 +301,6 @@ module Puppet::Environments
       nil
     end
 
-    # @!macro loader_get_or_fail
-    def get!(name)
-      @loaders.each do |loader|
-        if env = loader.get(name)
-          return env
-        end
-      end
-      raise EnvironmentNotFound, name
-    end
-
     # @!macro loader_get_conf
     def get_conf(name)
       @loaders.each do |loader|
@@ -313,7 +313,9 @@ module Puppet::Environments
 
   end
 
-  class Cached < Combined
+  class Cached
+    include EnvironmentLoader
+
     INFINITY = 1.0 / 0.0
 
     class DefaultCacheExpirationService
@@ -336,17 +338,28 @@ module Puppet::Environments
       @cache_expiration_service || DefaultCacheExpirationService.new
     end
 
-    def initialize(*loaders)
-      super
+    def initialize(loader)
+      @loader = loader
       @cache = {}
       @cache_expiration_service = Puppet::Environments::Cached.cache_expiration_service
     end
 
+    # @!macro loader_list
+    def list
+      @loader.list
+    end
+
+    # @!macro loader_search_paths
+    def search_paths
+      @loader.search_paths
+    end
+
+    # @!macro loader_get
     def get(name)
       evict_if_expired(name)
       if result = @cache[name]
         return result.value
-      elsif (result = super(name))
+      elsif (result = @loader.get(name))
         @cache[name] = entry(result)
         result
       end
@@ -364,13 +377,17 @@ module Puppet::Environments
       @cache = {}
     end
 
-    # This implementation evicts the cache, and always gets the current configuration of the environment
-    # TODO: While this is wasteful since it needs to go on a search for the conf, it is too disruptive to optimize
+    # This implementation evicts the cache, and always gets the current
+    # configuration of the environment
+    #
+    # TODO: While this is wasteful since it
+    # needs to go on a search for the conf, it is too disruptive to optimize
     # this.
     #
+    # @!macro loader_get_conf
     def get_conf(name)
       evict_if_expired(name)
-      super name
+      @loader.get_conf(name)
     end
 
     # Creates a suitable cache entry given the time to live for one environment

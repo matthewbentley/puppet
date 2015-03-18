@@ -68,6 +68,35 @@ describe Puppet::Parser::Collector do
       MANIFEST
     end
 
+    it "matches with bare word" do
+      expect_the_message_to_be(["wanted"], <<-MANIFEST)
+        @notify { "testing": tag => ["one"], message => "wanted" }
+        Notify <| tag == one |>
+      MANIFEST
+    end
+
+    it "matches with single quoted string" do
+      expect_the_message_to_be(["wanted"], <<-MANIFEST)
+        @notify { "testing": tag => ["one"], message => "wanted" }
+        Notify <| tag == 'one' |>
+      MANIFEST
+    end
+
+    it "matches with double quoted string" do
+      expect_the_message_to_be(["wanted"], <<-MANIFEST)
+        @notify { "testing": tag => ["one"], message => "wanted" }
+        Notify <| tag == "one" |>
+      MANIFEST
+    end
+
+    it "matches with double quoted string with interpolated expression" do
+      expect_the_message_to_be(["wanted"], <<-MANIFEST)
+        @notify { "testing": tag => ["one"], message => "wanted" }
+        $x = 'one'
+        Notify <| tag == "$x" |>
+      MANIFEST
+    end
+
     it "allows criteria to be combined with 'and'" do
       expect_the_message_to_be(["the message"], <<-MANIFEST)
         @notify { "testing": message => "the message" }
@@ -152,6 +181,18 @@ describe Puppet::Parser::Collector do
           Class <|  |>
         MANIFEST
       end.to raise_error(/Classes cannot be collected/)
+    end
+
+    it "does not collect resources that don't exist" do
+      node = Puppet::Node.new('the node')
+      expect do
+        catalog = compile_to_catalog(<<-MANIFEST, node)
+          class theclass {
+            @notify { "testing": message => "good message" }
+          }
+          SomeResource <|  |>
+        MANIFEST
+      end.to raise_error(/Resource type someresource doesn't exist/)
     end
 
     context "overrides" do
