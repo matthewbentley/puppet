@@ -1,6 +1,7 @@
 require 'net/http'
 require 'uri'
 require 'tempfile'
+require 'date'
 
 require 'puppet/util/checksums'
 require 'puppet/network/http'
@@ -73,19 +74,6 @@ module Puppet
       end
     end
 
-    def checksum_type
-      if source = resource.parameter(:source)
-        result = source.checksum
-      else
-        result = resource[:checksum]
-      end
-      if result =~ /^\{(\w+)\}.+/
-        return $1.to_sym
-      else
-        return result
-      end
-    end
-
     def length
       (actual_content and actual_content.length) || 0
     end
@@ -117,6 +105,21 @@ module Puppet
         end
       end
       result
+    end
+
+    def property_matches?(current, desired)
+      basic = super
+      # The inherited equality is always accepted, so use it if valid.
+      time_types = [:mtime, :ctime]
+      checksum_type = resource.parameter(:checksum).value
+      return basic if basic || !time_types.include?(checksum_type)
+      return false unless current && desired
+      begin
+        raise if !time_types.include?(sumtype(current).to_sym) || !time_types.include?(sumtype(desired).to_sym)
+        DateTime.parse(sumdata(current)) >= DateTime.parse(sumdata(desired))
+      rescue => detail
+        self.fail Puppet::Error, "Resource with checksum_type #{checksum_type} didn't contain a date in #{current} or #{desired}", detail.backtrace
+      end
     end
 
     def retrieve
@@ -213,7 +216,7 @@ module Puppet
 
       request.do_request(:fileserver) do |req|
         connection = Puppet::Network::HttpPool.http_instance(req.server, req.port)
-        connection.request_get(Puppet::Network::HTTP::API::IndirectedRoutes.request_to_uri(req), add_accept_encoding({"Accept" => "raw"}), &block)
+        connection.request_get(Puppet::Network::HTTP::API::IndirectedRoutes.request_to_uri(req), add_accept_encoding({"Accept" => "binary"}), &block)
       end
     end
 

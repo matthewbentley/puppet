@@ -43,6 +43,15 @@ module Puppet
           directory, but if it's running as any other user, it defaults to being
           in the user's home directory.",
     },
+    :codedir  => {
+        :default  => nil,
+        :type     => :directory,
+        :desc     => "The main Puppet code directory.  The default for this setting
+          is calculated based on the user.  If the process is running as root or
+          the user that Puppet is supposed to run as, it defaults to a system
+          directory, but if it's running as any other user, it defaults to being
+          in the user's home directory.",
+    },
     :vardir   => {
         :default  => nil,
         :type     => :directory,
@@ -254,13 +263,13 @@ module Puppet
           this provides the default environment for nodes we know nothing about."
     },
     :environmentpath => {
-      :default => "$confdir/environments",
+      :default => "$codedir/environments",
       :desc    => "A search path for directory environments, as a list of directories
         separated by the system path separator character. (The POSIX path separator
         is ':', and the Windows path separator is ';'.)
 
         This setting must have a value set to enable **directory environments.** The
-        recommended value is `$confdir/environments`. For more details, see
+        recommended value is `$codedir/environments`. For more details, see
         http://docs.puppetlabs.com/puppet/latest/reference/environments.html",
       :type    => :path,
     },
@@ -347,7 +356,7 @@ module Puppet
       :desc    => "Where to retrive information about data.",
     },
     :hiera_config => {
-      :default => "$confdir/hiera.yaml",
+      :default => "$codedir/hiera.yaml",
       :desc    => "The hiera configuration file. Puppet only reads this file on startup, so you must restart the puppet master every time you edit it.",
       :type    => :file,
     },
@@ -441,12 +450,35 @@ module Puppet
       a file (such as manifests or templates) has changed on disk. #{AS_DURATION}",
     },
     :environment_timeout => {
-      :default    => "unlimited",
+      :default    => "0",
       :type       => :ttl,
-      :desc       => "The time to live for a cached environment.
+      :desc       => "How long the Puppet master should cache data it loads from an
+      environment.
       #{AS_DURATION}
-      This setting can also be set to `unlimited`, which causes the environment to
-      be cached until the master is restarted."
+      A value of `0` will disable caching. This setting can also be set to
+      `unlimited`, which will cache environments until the master is restarted
+      or told to refresh the cache.
+
+      You should change this setting once your Puppet deployment is doing
+      non-trivial work. We chose the default value of `0` because it lets new
+      users update their code without any extra steps, but it lowers the
+      performance of your Puppet master.
+
+      We recommend setting this to `unlimited` and explicitly refreshing your
+      Puppet master as part of your code deployment process.
+
+      * With Puppet Server, you should refresh environments by calling the
+        `environment-cache` API endpoint. See the docs for the Puppet Server
+        administrative API.
+      * With a Rack Puppet master, you should restart the web server or the
+        application server. Passenger lets you touch a `restart.txt` file to
+        refresh an application without restarting Apache; see the Passenger docs
+        for details.
+
+      We don't recommend using any value other than `0` or `unlimited`, since
+      most Puppet masters use a pool of Ruby interpreters which all have their
+      own cache timers. When these timers drift out of sync, agents can be served
+      inconsistent catalogs."
     },
     :environment_data_provider => {
       :default    => "none",
@@ -473,6 +505,31 @@ module Puppet
         :desc     => "Freezes the 'main' class, disallowing any code to be added to it.  This
           essentially means that you can't have any code outside of a node,
           class, or definition other than in the site manifest.",
+    },
+    :stringify_facts => {
+      :default => true,
+      :type    => :boolean,
+      :desc    => "Flatten fact values to strings using #to_s. Means you can't have arrays or
+        hashes as fact values. (DEPRECATED) This option will be removed in Puppet 4.0.",
+    },
+    :trusted_node_data => {
+      :default => false,
+      :type    => :boolean,
+      :desc    => "Stores trusted node data in a hash called $trusted.
+        When true also prevents $trusted from being overridden in any scope.",
+    },
+    :immutable_node_data => {
+      :default => '$trusted_node_data',
+      :type    => :boolean,
+      :desc    => "When true, also prevents $trusted and $facts from being overridden in any scope",
+    },
+    :preview_outputdir => {
+      :default => '$vardir/preview',
+      :type     => :directory,
+      :mode     => "0750",
+      :owner    => "service",
+      :group    => "service",
+      :desc    => "The directory where catalog previews per node are generated."
     }
   )
   Puppet.define_settings(:module_tool,
@@ -934,7 +991,7 @@ EOT
       (but it can be overridden from the commandline). Please set a
       per-environment value in environment.conf instead. For more info, see
       http://docs.puppetlabs.com/puppet/latest/reference/environments.html",
-    },
+    }
   )
 
   define_settings(:master,
@@ -1001,15 +1058,6 @@ EOT
       this is the port to listen on; for puppet agent, this is the port
       to make requests on. Both applications use this setting to get the port.",
     },
-    :master_url_prefix => {
-        :default => "/puppet",
-        :desc    => "The prefix at which the puppet master API is mounted.",
-        :hook    => proc do |value|
-          if !value.start_with?("/")
-            Puppet[:master_url_prefix] = "/#{value}"
-          end
-        end
-    },
     :node_name => {
       :default    => "cert",
       :desc       => "How the puppet master determines the client's identity
@@ -1045,7 +1093,7 @@ EOT
       :desc       => "File that provides mapping between custom SSL oids and user-friendly names"
     },
     :basemodulepath => {
-      :default => "$confdir/modules#{File::PATH_SEPARATOR}/usr/share/puppet/modules",
+      :default => "$codedir/modules#{File::PATH_SEPARATOR}/opt/puppetlabs/puppet/modules",
       :type => :path,
       :desc => "The search path for **global** modules. Should be specified as a
         list of directories separated by the system path separator character. (The
@@ -1409,14 +1457,27 @@ EOT
     :graph => {
       :default  => false,
       :type     => :boolean,
-      :desc     => "Whether to create dot graph files for the different
-        configuration graphs.  These dot files can be interpreted by tools
-        like OmniGraffle or dot (which is part of ImageMagick).",
+      :desc     => "Whether to create .dot graph files, which let you visualize the
+        dependency and containment relationships in Puppet's catalog. You
+        can load and view these files with tools like
+        [OmniGraffle](http://www.omnigroup.com/applications/omnigraffle/) (OS X)
+        or [graphviz](http://www.graphviz.org/) (multi-platform).
+
+        Graph files are created when _applying_ a catalog, so this setting
+        should be used on nodes running `puppet agent` or `puppet apply`.
+
+        The `graphdir` setting determines where Puppet will save graphs. Note
+        that we don't save graphs for historical runs; Puppet will replace the
+        previous .dot files with new ones every time it applies a catalog.
+
+        See your graphing software's documentation for details on opening .dot
+        files. If you're using GraphViz's `dot` command, you can do a quick PNG
+        render with `dot -Tpng <DOT FILE> -o <OUTPUT FILE>`.",
     },
     :graphdir => {
       :default    => "$statedir/graphs",
       :type       => :directory,
-      :desc       => "Where to store dot-outputted graphs.",
+      :desc       => "Where to save .dot-format graphs (when the `graph` setting is enabled).",
     },
     :waitforcert => {
       :default  => "2m",

@@ -49,6 +49,9 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
 
     @@compare_operator     ||= Puppet::Pops::Evaluator::CompareOperator.new()
     @@relationship_operator ||= Puppet::Pops::Evaluator::RelationshipOperator.new()
+
+    # Use null migration checker unless given in context
+    @migration_checker = (Puppet.lookup(:migration_checker) { Puppet::Pops::Migration::MigrationChecker.new() })
   end
 
   # @api private
@@ -70,14 +73,43 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
       @@eval_visitor.visit_this_1(self, target, scope)
 
     rescue Puppet::Pops::SemanticError => e
-      # a raised issue may not know the semantic target
+      # A raised issue may not know the semantic target, use errors call stack, but fill in the 
+      # rest from a supplied semantic object, or the target instruction if there is not semantic
+      # object.
+      #
       fail(e.issue, e.semantic || target, e.options, e)
 
-    rescue StandardError => e
-      if e.is_a? Puppet::ParseError
-        # ParseError's are supposed to be fully configured with location information
+    rescue Puppet::PreformattedError => e
+      # Already formatted with location information, and with the wanted call stack.
+      # Note this is currently a specialized ParseError, so rescue-order is important
+      #
+      raise e
+
+    rescue Puppet::ParseError => e
+      # ParseError may be raised in ruby code without knowing the location
+      # in puppet code.
+      # Accept a ParseError that has file or line information available
+      # as an error that should be used verbatim. (Tests typically run without
+      # setting a file name).
+      # ParseError can supply an original - it is impossible to determine which
+      # call stack that should be propagated, using the ParseError's backtrace.
+      #
+      if e.file || e.line
         raise e
+      else
+        # Since it had no location information, treat it as user intended a general purpose
+        # error. Pass on its call stack.
+        fail(Issues::RUNTIME_ERROR, target, {:detail => e.message}, e)
       end
+
+
+    rescue Puppet::Error => e
+      # PuppetError has the ability to wrap an exception, if so, use the wrapped exception's
+      # call stack instead
+      fail(Issues::RUNTIME_ERROR, target, {:detail => e.message}, e.original || e)
+
+    rescue StandardError => e
+      # All other errors, use its message and call stack
       fail(Issues::RUNTIME_ERROR, target, {:detail => e.message}, e)
     end
   end
@@ -221,7 +253,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
   end
 
   def eval_NotExpression(o, scope)
-    ! is_true?(evaluate(o.expr, scope))
+    ! is_true?(evaluate(o.expr, scope), o.expr)
   end
 
   def eval_UnaryMinusExpression(o, scope)
@@ -231,6 +263,8 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
   def eval_UnfoldExpression(o, scope)
     candidate = evaluate(o.expr, scope)
     case candidate
+    when nil
+      []
     when Array
       candidate
     when Hash
@@ -480,7 +514,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
   # b is only evaluated if a is true
   #
   def eval_AndExpression o, scope
-    is_true?(evaluate(o.left_expr, scope)) ? is_true?(evaluate(o.right_expr, scope)) : false
+    is_true?(evaluate(o.left_expr, scope), o.left_expr) ? is_true?(evaluate(o.right_expr, scope), o.right_expr) : false
   end
 
   # @example
@@ -488,7 +522,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
   # b is only evaluated if a is false
   #
   def eval_OrExpression o, scope
-    is_true?(evaluate(o.left_expr, scope)) ? true : is_true?(evaluate(o.right_expr, scope))
+    is_true?(evaluate(o.left_expr, scope), o.left_expr) ? true : is_true?(evaluate(o.right_expr, scope), o.right_expr)
   end
 
   # Evaluates each entry of the literal list and creates a new Array
@@ -527,6 +561,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
     #
     with_guarded_scope(scope) do
       test = evaluate(o.test, scope)
+
       result = nil
       the_default = nil
       if o.options.find do |co|
@@ -535,13 +570,13 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
           case c
           when Puppet::Pops::Model::LiteralDefault
             the_default = co.then_expr
-            is_match?(test, evaluate(c, scope), c, scope)
+            is_match?(test, evaluate(c, scope), c, co, scope)
           when Puppet::Pops::Model::UnfoldExpression
             # not ideal for error reporting, since it is not known which unfolded result
             # that caused an error - the entire unfold expression is blamed (i.e. the var c, passed to is_match?)
-            evaluate(c, scope).any? {|v| is_match?(test, v, c, scope) }
+            evaluate(c, scope).any? {|v| is_match?(test, v, c, co, scope) }
           else
-            is_match?(test, evaluate(c, scope), c, scope)
+            is_match?(test, evaluate(c, scope), c, co, scope)
           end
         end
         result = evaluate(co.then_expr, scope)
@@ -756,12 +791,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
       fail(Issues::ILLEGAL_EXPRESSION, o.functor_expr, {:feature=>'function name', :container => o})
     end
     name = o.functor_expr.value
-
-    evaluated_arguments = unfold([], o.arguments, scope)
-
-    # wrap lambda in a callable block if it is present
-    evaluated_arguments << Puppet::Pops::Evaluator::Closure.new(self, o.lambda, scope) if o.lambda
-    call_function(name, evaluated_arguments, o, scope)
+    call_function_with_block(name, unfold([], o.arguments, scope), o, scope)
   end
 
   # Evaluation of CallMethodExpression handles a NamedAccessExpression functor (receiver.function_name)
@@ -776,13 +806,18 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
       fail(Issues::ILLEGAL_EXPRESSION, o.functor_expr, {:feature=>'function name', :container => o})
     end
     name = name.value # the string function name
-
-    evaluated_arguments = unfold([receiver], o.arguments || [], scope)
-
-    # wrap lambda in a callable block if it is present
-    evaluated_arguments << Puppet::Pops::Evaluator::Closure.new(self, o.lambda, scope) if o.lambda
-    call_function(name, evaluated_arguments, o, scope)
+    call_function_with_block(name, unfold([receiver], o.arguments || [], scope), o, scope)
   end
+
+  def call_function_with_block(name, evaluated_arguments, o, scope)
+    if o.lambda.nil?
+      call_function(name, evaluated_arguments, o, scope)
+    else
+      closure = Puppet::Pops::Evaluator::Closure.new(self, o.lambda, scope)
+      call_function(name, evaluated_arguments, o, scope, &Puppet::Pops::Evaluator::PuppetProc.new(closure) { |*args| closure.call(*args) })
+    end
+  end
+  private :call_function_with_block
 
   # @example
   #   $x ? { 10 => true, 20 => false, default => 0 }
@@ -793,6 +828,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
     #
     with_guarded_scope(scope) do
       test = evaluate(o.left_expr, scope)
+
       the_default = nil
       selected = o.selectors.find do |s|
         me = s.matching_expr
@@ -803,9 +839,9 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
         when Puppet::Pops::Model::UnfoldExpression
           # not ideal for error reporting, since it is not known which unfolded result
           # that caused an error - the entire unfold expression is blamed (i.e. the var c, passed to is_match?)
-          evaluate(me, scope).any? {|v| is_match?(test, v, me, scope) }
+          evaluate(me, scope).any? {|v| is_match?(test, v, me, s, scope) }
         else
-          is_match?(test, evaluate(me, scope), me, scope)
+          is_match?(test, evaluate(me, scope), me, s, scope)
         end
       end
       if selected
@@ -833,7 +869,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
   # Evaluates Puppet DSL `if`
   def eval_IfExpression o, scope
     with_guarded_scope(scope) do
-      if is_true?(evaluate(o.test, scope))
+      if is_true?(evaluate(o.test, scope), o.test)
         evaluate(o.then_expr, scope)
       else
         evaluate(o.else_expr, scope)
@@ -844,7 +880,7 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
   # Evaluates Puppet DSL `unless`
   def eval_UnlessExpression o, scope
     with_guarded_scope(scope) do
-      unless is_true?(evaluate(o.test, scope))
+      unless is_true?(evaluate(o.test, scope), o.test)
         evaluate(o.then_expr, scope)
       else
         evaluate(o.else_expr, scope)
@@ -1045,7 +1081,8 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
   # This is the type of matching performed in a case option, using == for every type
   # of value except regular expression where a match is performed.
   #
-  def is_match? left, right, o, scope
+  def is_match?(left, right, o, option_expr, scope)
+    @migration_checker.report_option_type_mismatch(left, right, option_expr, o)
     if right.is_a?(Regexp)
       return false unless left.is_a? String
       matched = right.match(left)
@@ -1056,11 +1093,13 @@ class Puppet::Pops::Evaluator::EvaluatorImpl
       # (The reverse is not terribly meaningful - computing which of the case options that first produces
       # an instance of a given type).
       #
+      @migration_checker.report_uc_bareword_type(right, o)
       @@type_calculator.instance?(right, left)
     else
       # Handle equality the same way as the language '==' operator (case insensitive etc.)
       @@compare_operator.equals(left,right)
     end
+    @@compare_operator.match(left, right, scope)
   end
 
   def with_guarded_scope(scope)

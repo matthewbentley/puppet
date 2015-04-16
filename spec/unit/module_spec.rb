@@ -34,6 +34,69 @@ describe Puppet::Module do
     end
   end
 
+  describe "is_module_directory?" do
+    let(:first_modulepath) { tmpdir('firstmodules') }
+    let(:not_a_module) { tmpfile('thereisnomodule', first_modulepath) }
+
+    it "should return false for a non-directory" do
+      expect(Puppet::Module.is_module_directory?('thereisnomodule', first_modulepath)).to be_falsey
+    end
+
+    it "should return true for a well named directories" do
+      PuppetSpec::Modules.generate_files('foo', first_modulepath)
+      PuppetSpec::Modules.generate_files('foo2', first_modulepath)
+      PuppetSpec::Modules.generate_files('foo_bar', first_modulepath)
+      expect(Puppet::Module.is_module_directory?('foo', first_modulepath)).to be_truthy
+      expect(Puppet::Module.is_module_directory?('foo2', first_modulepath)).to be_truthy
+      expect(Puppet::Module.is_module_directory?('foo_bar', first_modulepath)).to be_truthy
+    end
+
+    it "should return false for badly named directories" do
+      PuppetSpec::Modules.generate_files('foo=bar', first_modulepath)
+      PuppetSpec::Modules.generate_files('.foo', first_modulepath)
+      expect(Puppet::Module.is_module_directory?('foo=bar', first_modulepath)).to be_falsey
+      expect(Puppet::Module.is_module_directory?('.foo', first_modulepath)).to be_falsey
+    end
+  end
+
+  describe "is_module_directory_name?" do
+    it "should return true for a valid directory module name" do
+      expect(Puppet::Module.is_module_directory_name?('foo')).to be_truthy
+      expect(Puppet::Module.is_module_directory_name?('foo2')).to be_truthy
+      expect(Puppet::Module.is_module_directory_name?('foo_bar')).to be_truthy
+    end
+
+    it "should return false for badly formed directory module names" do
+      expect(Puppet::Module.is_module_directory_name?('foo-bar')).to be_falsey
+      expect(Puppet::Module.is_module_directory_name?('foo=bar')).to be_falsey
+      expect(Puppet::Module.is_module_directory_name?('foo bar')).to be_falsey
+      expect(Puppet::Module.is_module_directory_name?('foo.bar')).to be_falsey
+      expect(Puppet::Module.is_module_directory_name?('-foo')).to be_falsey
+      expect(Puppet::Module.is_module_directory_name?('foo-')).to be_falsey
+      expect(Puppet::Module.is_module_directory_name?('foo--bar')).to be_falsey
+      expect(Puppet::Module.is_module_directory_name?('.foo')).to be_falsey
+    end
+  end
+
+  describe "is_module_namespaced_name?" do
+    it "should return true for a valid namespaced module name" do
+      expect(Puppet::Module.is_module_namespaced_name?('foo-bar')).to be_truthy
+    end
+
+    it "should return false for badly formed namespaced module names" do
+      expect(Puppet::Module.is_module_namespaced_name?('foo')).to be_falsey
+      expect(Puppet::Module.is_module_namespaced_name?('.foo-bar')).to be_falsey
+      expect(Puppet::Module.is_module_namespaced_name?('foo2')).to be_falsey
+      expect(Puppet::Module.is_module_namespaced_name?('foo_bar')).to be_falsey
+      expect(Puppet::Module.is_module_namespaced_name?('foo=bar')).to be_falsey
+      expect(Puppet::Module.is_module_namespaced_name?('foo bar')).to be_falsey
+      expect(Puppet::Module.is_module_namespaced_name?('foo.bar')).to be_falsey
+      expect(Puppet::Module.is_module_namespaced_name?('-foo')).to be_falsey
+      expect(Puppet::Module.is_module_namespaced_name?('foo-')).to be_falsey
+      expect(Puppet::Module.is_module_namespaced_name?('foo--bar')).to be_falsey
+    end
+  end
+
   describe "attributes" do
     it "should support a 'version' attribute" do
       mod.version = 1.09
@@ -95,6 +158,33 @@ describe Puppet::Module do
       Puppet.settings[:modulepath] = @modpath
     end
 
+    it "should resolve module dependencies using forge names" do
+      parent = PuppetSpec::Modules.create(
+        'parent',
+        @modpath,
+        :metadata => {
+          :author => 'foo',
+          :dependencies => [{
+            "name" => "foo/child"
+          }]
+        },
+        :environment => env
+      )
+      child = PuppetSpec::Modules.create(
+        'child',
+        @modpath,
+        :metadata => {
+          :author => 'foo',
+          :dependencies => []
+        },
+        :environment => env
+      )
+
+      env.expects(:module_by_forge_name).with('foo/child').returns(child)
+
+      expect(parent.unmet_dependencies).to eq([])
+    end
+
     it "should list modules that are missing" do
       metadata_file = "#{@modpath}/needy/metadata.json"
       Puppet::FileSystem.expects(:exist?).with(metadata_file).returns true
@@ -106,8 +196,12 @@ describe Puppet::Module do
             "version_requirement" => ">= 2.2.0",
             "name" => "baz/foobar"
           }]
-        }
+        },
+        :environment => env
       )
+
+      env.expects(:module_by_forge_name).with('baz/foobar').returns(nil)
+
       expect(mod.unmet_dependencies).to eq([{
         :reason => :missing,
         :name   => "baz/foobar",
@@ -128,8 +222,12 @@ describe Puppet::Module do
             "version_requirement" => ">= 2.2.0",
             "name" => "baz/foobar=bar"
           }]
-        }
+        },
+        :environment => env
       )
+
+      env.expects(:module_by_forge_name).with('baz/foobar=bar').returns(nil)
+
       expect(mod.unmet_dependencies).to eq([{
         :reason => :missing,
         :name   => "baz/foobar=bar",
@@ -528,19 +626,7 @@ describe Puppet::Module do
 
   it "should not have metadata if has a metadata file and its data is empty" do
     Puppet::FileSystem.expects(:exist?).with(@module.metadata_file).returns true
-    File.stubs(:read).with(@module.metadata_file).returns "/*
-+-----------------------------------------------------------------------+
-|                                                                       |
-|                    ==> DO NOT EDIT THIS FILE! <==                     |
-|                                                                       |
-|   You should edit the `Modulefile` and run `puppet-module build`      |
-|   to generate the `metadata.json` file for your releases.             |
-|                                                                       |
-+-----------------------------------------------------------------------+
-*/
-
-{}"
-
+    File.stubs(:read).with(@module.metadata_file).returns "This is some invalid json.\n"
     expect(@module).not_to be_has_metadata
   end
 
@@ -610,40 +696,6 @@ describe Puppet::Module do
     it "should set puppetversion if present in the metadata file" do
       @module.load_metadata
       expect(@module.puppetversion).to eq(@data[:puppetversion])
-    end
-
-    context "when versionRequirement is used for dependency version info" do
-      before do
-        @data = {
-          :license       => "GPL2",
-          :author        => "luke",
-          :version       => "1.0",
-          :source        => "http://foo/",
-          :puppetversion => "0.25",
-          :dependencies  => [
-            {
-              "versionRequirement" => "0.0.1",
-              "name" => "pmtacceptance/stdlib"
-            },
-            {
-              "versionRequirement" => "0.1.0",
-              "name" => "pmtacceptance/apache"
-            }
-          ]
-        }
-        @module = a_module_with_metadata(@data)
-      end
-
-      it "should set the dependency version_requirement key" do
-        @module.load_metadata
-        expect(@module.dependencies[0]['version_requirement']).to eq("0.0.1")
-      end
-
-      it "should set the version_requirement key for all dependencies" do
-        @module.load_metadata
-        expect(@module.dependencies[0]['version_requirement']).to eq("0.0.1")
-        expect(@module.dependencies[1]['version_requirement']).to eq("0.1.0")
-      end
     end
   end
 

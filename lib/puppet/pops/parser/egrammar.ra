@@ -354,7 +354,7 @@ unless_expression
       loc result, val[0], val[4]
     }
   | UNLESS expression LBRACE RBRACE unless_else {
-      result = Factory.UNLESS(val[1], nil, nil)
+      result = Factory.UNLESS(val[1], nil, val[4])
       loc result, val[0], val[4]
     }
 
@@ -581,6 +581,8 @@ node_definition_expression
 #   TODO: The error that "class" is not a valid classname is bad - classname rule is also used for other things
 classname
   : NAME
+  | WORD
+  | CLASSREF
   | CLASS { error val[0], "'class' is not a valid classname" }
 
 # Produces Array<Model::Parameter>

@@ -20,6 +20,8 @@ class Puppet::Pops::Parser::EvaluatingParser
     #
     begin
       assert_and_report(parser.parse_string(s))
+    rescue Puppet::ParseErrorWithIssue => e
+      raise e
     rescue Puppet::ParseError => e
       # TODO: This is not quite right, why does not the exception have the correct file?
       e.file = @file_source unless e.file.is_a?(String) && !e.file.empty?
@@ -63,12 +65,16 @@ class Puppet::Pops::Parser::EvaluatingParser
   end
 
   def evaluator
+    # Do not use the cached evaluator if this is a migration run
+    if (Puppet.lookup(:migration_checker) { nil })
+      return Puppet::Pops::Evaluator::EvaluatorImpl.new()
+    end
     @@evaluator ||= Puppet::Pops::Evaluator::EvaluatorImpl.new()
     @@evaluator
   end
 
   def convert_to_3x(object, scope)
-    val = @@evaluator.convert(object, scope, nil)
+    val = evaluator.convert(object, scope, nil)
   end
 
   def validate(parse_result)

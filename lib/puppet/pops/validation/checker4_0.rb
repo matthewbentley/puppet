@@ -14,6 +14,8 @@ class Puppet::Pops::Validation::Checker4_0
   Model = Puppet::Pops::Model
 
   attr_reader :acceptor
+  attr_reader :migration_checker
+
   # Initializes the validator with a diagnostics producer. This object must respond to
   # `:will_accept?` and `:accept`.
   #
@@ -28,6 +30,9 @@ class Puppet::Pops::Validation::Checker4_0
     @@idem_visitor        ||= Puppet::Pops::Visitor.new(self, "idem", 0, 0)
 
     @acceptor = diagnostics_producer
+
+    # Use null migration checker unless given in context
+    @migration_checker = (Puppet.lookup(:migration_checker) { Puppet::Pops::Migration::MigrationChecker.new() })
   end
 
   # Validates the entire model by visiting each model element and calling `check`.
@@ -478,11 +483,13 @@ class Puppet::Pops::Validation::Checker4_0
 
   # Checks that variable is either strictly 0, or a non 0 starting decimal number, or a valid VAR_NAME
   def check_VariableExpression(o)
-    # The expression must be a qualified name
-    if !o.expr.is_a?(Model::QualifiedName)
+    # The expression must be a qualified name or an integer
+    name_expr = o.expr
+    return if name_expr.is_a?(Model::LiteralInteger)
+    if !name_expr.is_a?(Model::QualifiedName)
       acceptor.accept(Issues::ILLEGAL_EXPRESSION, o, :feature => 'name', :container => o)
     else
-      # name must be either a decimal value, or a valid NAME
+      # name must be either a decimal string value, or a valid NAME
       name = o.expr.value
       if name[0,1] =~ /[0-9]/
         unless name =~ Puppet::Pops::Patterns::NUMERIC_VAR_NAME

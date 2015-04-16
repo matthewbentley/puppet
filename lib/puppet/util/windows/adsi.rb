@@ -15,7 +15,7 @@ module Puppet::Util::Windows::ADSI
     def connect(uri)
       begin
         WIN32OLE.connect(uri)
-      rescue Exception => e
+      rescue WIN32OLERuntimeError => e
         raise Puppet::Error.new( "ADSI connection error: #{e}", e )
       end
     end
@@ -155,7 +155,15 @@ module Puppet::Util::Windows::ADSI
     def commit
       begin
         native_user.SetInfo unless native_user.nil?
-      rescue Exception => e
+      rescue WIN32OLERuntimeError => e
+        # ERROR_BAD_USERNAME 2202L from winerror.h
+        if e.message =~ /8007089A/m
+          raise Puppet::Error.new(
+           "Puppet is not able to create/delete domain users with the user resource.",
+           e
+          )
+        end
+
         raise Puppet::Error.new( "User update failed: #{e}", e )
       end
       self
@@ -279,7 +287,7 @@ module Puppet::Util::Windows::ADSI
     def self.delete(sid)
       begin
         Puppet::Util::Windows::ADSI.wmi_connection.Delete("Win32_UserProfile.SID='#{sid}'")
-      rescue => e
+      rescue WIN32OLERuntimeError => e
         # http://social.technet.microsoft.com/Forums/en/ITCG/thread/0f190051-ac96-4bf1-a47f-6b864bfacee5
         # Prior to Vista SP1, there's no builtin way to programmatically
         # delete user profiles (except for delprof.exe). So try to delete
@@ -322,7 +330,15 @@ module Puppet::Util::Windows::ADSI
     def commit
       begin
         native_group.SetInfo unless native_group.nil?
-      rescue Exception => e
+      rescue WIN32OLERuntimeError => e
+        # ERROR_BAD_USERNAME 2202L from winerror.h
+        if e.message =~ /8007089A/m
+          raise Puppet::Error.new(
+            "Puppet is not able to create/delete domain groups with the group resource.",
+            e
+          )
+        end
+
         raise Puppet::Error.new( "Group update failed: #{e}", e )
       end
       self
@@ -368,19 +384,27 @@ module Puppet::Util::Windows::ADSI
     end
 
     def set_members(desired_members, inclusive = true)
-      return if desired_members.nil? or desired_members.empty?
+      return if desired_members.nil?
 
       current_hash = Hash[ self.member_sids.map { |sid| [sid.to_s, sid] } ]
       desired_hash = self.class.name_sid_hash(desired_members)
 
       # First we add all missing members
-      members_to_add = (desired_hash.keys - current_hash.keys).map { |sid| desired_hash[sid] }
-      add_member_sids(*members_to_add)
+      if !desired_hash.empty?
+        members_to_add = (desired_hash.keys - current_hash.keys).map { |sid| desired_hash[sid] }
+        add_member_sids(*members_to_add)
+      end
 
-      # Then we remove all extra members
-      members_to_remove = (current_hash.keys - desired_hash.keys).map { |sid| current_hash[sid] }
+      # Then we remove all extra members if inclusive
+      if inclusive
+        if desired_hash.empty?
+          members_to_remove = current_hash.values
+        else
+          members_to_remove = (current_hash.keys - desired_hash.keys).map { |sid| current_hash[sid] }
+        end
 
-      remove_member_sids(*members_to_remove) if inclusive
+        remove_member_sids(*members_to_remove)
+      end
     end
 
     def self.create(name)

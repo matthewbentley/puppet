@@ -9,6 +9,11 @@ Puppet::Type.type(:group).provide :windows_adsi do
 
   has_features :manages_members
 
+  def initialize(value={})
+    super(value)
+    @deleted = false
+  end
+
   def members_insync?(current, should)
     return false unless current
 
@@ -17,9 +22,6 @@ Puppet::Type.type(:group).provide :windows_adsi do
 
     # Cannot use munge of the group property to canonicalize @should
     # since the default array_matching comparison is not commutative
-    should_empty = should.nil? or should.empty?
-
-    return false if current.empty? != should_empty
 
     # dupes automatically weeded out when hashes built
     current_users = Puppet::Util::Windows::ADSI::Group.name_sid_hash(current)
@@ -28,6 +30,7 @@ Puppet::Type.type(:group).provide :windows_adsi do
     if @resource[:auth_membership]
       current_users == specified_users
     else
+      return true if specified_users.empty?
       (specified_users.keys.to_a & current_users.keys.to_a) == specified_users.keys.to_a
     end
   end
@@ -72,11 +75,13 @@ Puppet::Type.type(:group).provide :windows_adsi do
 
   def delete
     Puppet::Util::Windows::ADSI::Group.delete(@resource[:name])
+
+    @deleted = true
   end
 
   # Only flush if we created or modified a group, not deleted
   def flush
-    @group.commit if @group
+    @group.commit if @group && !@deleted
   end
 
   def gid

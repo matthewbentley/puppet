@@ -6,6 +6,7 @@ require 'puppet/network/resolver'
 
 describe Puppet::Type.type(:file).attrclass(:content), :uses_checksums => true do
   include PuppetSpec::Files
+  include_context 'with supported checksum types'
 
   let(:filename) { tmpfile('testfile') }
   let(:environment) { Puppet::Node::Environment.create(:testing, []) }
@@ -20,29 +21,6 @@ describe Puppet::Type.type(:file).attrclass(:content), :uses_checksums => true d
   around do |example|
     Puppet.override(:environments => Puppet::Environments::Static.new(environment)) do
       example.run
-    end
-  end
-
-  describe "when determining the checksum type" do
-    let(:content) { described_class.new(:resource => resource) }
-
-    it "should use the type specified in the source checksum if a source is set" do
-      resource[:source] = File.expand_path("/foo")
-      resource.parameter(:source).expects(:checksum).returns "{md5lite}eh"
-
-      expect(content.checksum_type).to eq(:md5lite)
-    end
-
-    it "should use the type specified by the checksum parameter if no source is set" do
-      resource[:checksum] = :md5lite
-
-      expect(content.checksum_type).to eq(:md5lite)
-    end
-
-    with_digest_algorithms do
-      it "should use the type specified by digest_algorithm by default" do
-        expect(content.checksum_type).to eq(digest_algorithm.intern)
-      end
     end
   end
 
@@ -67,7 +45,6 @@ describe Puppet::Type.type(:file).attrclass(:content), :uses_checksums => true d
     let(:content) { described_class.new(:resource => resource) }
 
     it "should make the actual content available via an attribute" do
-      content.stubs(:checksum_type).returns "md5"
       content.should = "this is some content"
 
       expect(content.actual_content).to eq("this is some content")
@@ -77,7 +54,6 @@ describe Puppet::Type.type(:file).attrclass(:content), :uses_checksums => true d
       it "should store the checksum as the desired content" do
         d = digest("this is some content")
 
-        content.stubs(:checksum_type).returns digest_algorithm
         content.should = "this is some content"
 
         expect(content.should).to eq("{#{digest_algorithm}}#{d}")
@@ -159,40 +135,43 @@ describe Puppet::Type.type(:file).attrclass(:content), :uses_checksums => true d
       resource[:ensure] = :file
     end
 
-    it "should return true if the resource shouldn't be a regular file" do
-      resource.expects(:should_be_file?).returns false
-      content.should = "foo"
-      expect(content).to be_safe_insync("whatever")
-    end
+    with_digest_algorithms do
+      before(:each) do
+        resource[:checksum] = digest_algorithm
+      end
 
-    it "should warn that no content will be synced to links when ensure is :present" do
-      resource[:ensure] = :present
-      resource[:content] = 'foo'
-      resource.stubs(:should_be_file?).returns false
-      resource.stubs(:stat).returns mock("stat", :ftype => "link")
+      it "should return true if the resource shouldn't be a regular file" do
+        resource.expects(:should_be_file?).returns false
+        content.should = "foo"
+        expect(content).to be_safe_insync("whatever")
+      end
 
-      resource.expects(:warning).with {|msg| msg =~ /Ensure set to :present but file type is/}
+      it "should warn that no content will be synced to links when ensure is :present" do
+        resource[:ensure] = :present
+        resource[:content] = 'foo'
+        resource.stubs(:should_be_file?).returns false
+        resource.stubs(:stat).returns mock("stat", :ftype => "link")
 
-      content.insync? :present
-    end
+        resource.expects(:warning).with {|msg| msg =~ /Ensure set to :present but file type is/}
 
-    it "should return false if the current content is :absent" do
-      content.should = "foo"
-      expect(content).not_to be_safe_insync(:absent)
-    end
+        content.insync? :present
+      end
 
-    it "should return false if the file should be a file but is not present" do
-      resource.expects(:should_be_file?).returns true
-      content.should = "foo"
+      it "should return false if the current content is :absent" do
+        content.should = "foo"
+        expect(content).not_to be_safe_insync(:absent)
+      end
 
-      expect(content).not_to be_safe_insync(:absent)
-    end
+      it "should return false if the file should be a file but is not present" do
+        resource.expects(:should_be_file?).returns true
+        content.should = "foo"
 
-    describe "and the file exists" do
-      with_digest_algorithms do
+        expect(content).not_to be_safe_insync(:absent)
+      end
+
+      describe "and the file exists" do
         before do
           resource.stubs(:stat).returns mock("stat")
-          resource[:checksum] = digest_algorithm
           content.should = "some content"
         end
 
@@ -229,6 +208,61 @@ describe Puppet::Type.type(:file).attrclass(:content), :uses_checksums => true d
       end
     end
 
+    SAVED_TIME = Time.now
+    [:ctime, :mtime].each do |time_stat|
+      [["older", SAVED_TIME-1, false], ["same", SAVED_TIME, true], ["newer", SAVED_TIME+1, true]].each do
+        |compare, target_time, success|
+        describe "with #{compare} target #{time_stat} compared to source" do
+          before do
+            resource[:checksum] = time_stat
+            content.should = "{#{time_stat}}#{SAVED_TIME}"
+          end
+
+          it "should return #{success}" do
+            if success
+              expect(content).to be_safe_insync("{#{time_stat}}#{target_time}")
+            else
+              expect(content).not_to be_safe_insync("{#{time_stat}}#{target_time}")
+            end
+          end
+        end
+      end
+
+      describe "with #{time_stat}" do
+        before do
+          resource[:checksum] = time_stat
+        end
+
+        it "should not be insync if trying to create it" do
+          content.should = "{#{time_stat}}#{SAVED_TIME}"
+          expect(content).not_to be_safe_insync(:absent)
+        end
+
+        it "should raise an error if content is not a checksum" do
+          content.should = "some content"
+          expect {
+            content.safe_insync?("{#{time_stat}}#{SAVED_TIME}")
+          }.to raise_error(/Resource with checksum_type #{time_stat} didn't contain a date in/)
+        end
+
+        it "should not be insync even if content is the absent symbol" do
+          content.should = :absent
+          expect(content).not_to be_safe_insync(:absent)
+        end
+
+        it "should warn that no content will be synced to links when ensure is :present" do
+          resource[:ensure] = :present
+          resource[:content] = 'foo'
+          resource.stubs(:should_be_file?).returns false
+          resource.stubs(:stat).returns mock("stat", :ftype => "link")
+
+          resource.expects(:warning).with {|msg| msg =~ /Ensure set to :present but file type is/}
+
+          content.insync? :present
+        end
+      end
+    end
+
     describe "and :replace is false" do
       before do
         resource.stubs(:replace?).returns false
@@ -253,7 +287,27 @@ describe Puppet::Type.type(:file).attrclass(:content), :uses_checksums => true d
     end
   end
 
- describe "when changing the content" do
+  describe "when testing whether the content is initialized in the resource and in sync" do
+    CHECKSUM_TYPES_TO_TRY.each do |checksum_type, checksum|
+      describe "sync with checksum type #{checksum_type} and the file exists" do
+        before do
+          @new_resource = Puppet::Type.type(:file).new :ensure => :file, :path => filename, :catalog => catalog,
+            :content => CHECKSUM_PLAINTEXT, :checksum => checksum_type
+          @new_resource.stubs(:stat).returns mock('stat')
+        end
+
+        it "should return false if the sum for the current contents are different from the desired content" do
+          expect(@new_resource.parameters[:content]).not_to be_safe_insync("other content")
+        end
+
+        it "should return true if the sum for the current contents is the same as the sum for the desired content" do
+          expect(@new_resource.parameters[:content]).to be_safe_insync("{#{checksum_type}}#{checksum}")
+        end
+      end
+    end
+  end
+
+  describe "when changing the content" do
     let(:content) { described_class.new(:resource => resource) }
 
     before do

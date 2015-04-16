@@ -85,6 +85,14 @@ describe 'The type calculator' do
     Puppet::Pops::Types::TypeFactory.any()
   end
 
+  def optional_t(t)
+    Puppet::Pops::Types::TypeFactory.optional(t)
+  end
+
+  def undef_t
+    Puppet::Pops::Types::TypeFactory.undef
+  end
+
   def unit_t
     # Cannot be created via factory, the type is private to the type system
     Puppet::Pops::Types::PUnitType.new
@@ -99,7 +107,7 @@ describe 'The type calculator' do
     # Do not include the special type Unit in this list
     def all_types
       [ Puppet::Pops::Types::PAnyType,
-        Puppet::Pops::Types::PNilType,
+        Puppet::Pops::Types::PUndefType,
         Puppet::Pops::Types::PDataType,
         Puppet::Pops::Types::PScalarType,
         Puppet::Pops::Types::PStringType,
@@ -175,7 +183,7 @@ describe 'The type calculator' do
       result << Puppet::Pops::Types::PDataType
       result << array_t(types::PDataType.new)
       result << types::TypeFactory.hash_of_data
-      result << Puppet::Pops::Types::PNilType
+      result << Puppet::Pops::Types::PUndefType
       tmp = tuple_t(types::PDataType.new)
       result << (tmp)
       tmp.size_type = range_t(0, nil)
@@ -223,8 +231,8 @@ describe 'The type calculator' do
       expect(calculator.infer(/^a regular expression$/).class).to eq(Puppet::Pops::Types::PRegexpType)
     end
 
-    it 'nil translates to PNilType' do
-      expect(calculator.infer(nil).class).to eq(Puppet::Pops::Types::PNilType)
+    it 'nil translates to PUndefType' do
+      expect(calculator.infer(nil).class).to eq(Puppet::Pops::Types::PUndefType)
     end
 
     it ':undef translates to PRuntimeType' do
@@ -355,8 +363,48 @@ describe 'The type calculator' do
       it 'with fixnum values translates to PHashType[key, PIntegerType]' do
         expect(calculator.infer({:first => 1, :second => 2}).element_type.class).to eq(Puppet::Pops::Types::PIntegerType)
       end
-    end
 
+      it 'when empty infers a type that answers true to is_the_empty_hash?' do
+        expect(calculator.infer({}).is_the_empty_hash?).to eq(true)
+        expect(calculator.infer_set({}).is_the_empty_hash?).to eq(true)
+      end
+
+      it 'when empty is assignable to any PHashType' do
+        expect(calculator.assignable?(hash_t(string_t, string_t), calculator.infer({}))).to eq(true)
+      end
+
+      it 'when empty is not assignable to a PHashType with from size > 0' do
+        expect(calculator.assignable?(constrained_t(hash_t(string_t,string_t), 1, 1), calculator.infer({}))).to eq(false)
+      end
+
+      context 'using infer_set' do
+        it "with 'first' and 'second' keys translates to PStructType[{first=>value,second=>value}]" do
+          t = calculator.infer_set({'first' => 1, 'second' => 2})
+          expect(t.class).to eq(Puppet::Pops::Types::PStructType)
+          expect(t.elements.size).to eq(2)
+          expect(t.elements.map { |e| e.name }.sort).to eq(['first', 'second'])
+        end
+
+        it 'with string keys and string and array values translates to PStructType[{key1=>PStringType,key2=>PTupleType}]' do
+          t = calculator.infer_set({ 'mode' => 'read', 'path' => ['foo', 'fee' ] })
+          expect(t.class).to eq(Puppet::Pops::Types::PStructType)
+          expect(t.elements.size).to eq(2)
+          els = t.elements.map { |e| e.type }.sort {|a,b| a.to_s <=> b.to_s }
+          expect(els[0].class).to eq(Puppet::Pops::Types::PStringType)
+          expect(els[1].class).to eq(Puppet::Pops::Types::PTupleType)
+        end
+
+        it 'with mixed string and non-string keys translates to PHashType' do
+          t = calculator.infer_set({ 1 => 'first', 'second' => 'second' })
+          expect(t.class).to eq(Puppet::Pops::Types::PHashType)
+        end
+
+        it 'with empty string keys translates to PHashType' do
+          t = calculator.infer_set({ '' => 'first', 'second' => 'second' })
+          expect(t.class).to eq(Puppet::Pops::Types::PHashType)
+        end
+      end
+    end
   end
 
   context 'patterns' do
@@ -683,6 +731,22 @@ describe 'The type calculator' do
         t = Puppet::Pops::Types::PHashType.new()
         tested_types.each {|t2| expect(t).not_to be_assignable_to(t2.new) }
       end
+
+      it 'Struct is assignable to Hash with Pattern that matches all keys' do
+        expect(struct_t({'x' => integer_t, 'y' => integer_t})).to be_assignable_to(hash_t(pattern_t(/^\w+$/), factory.any))
+      end
+
+      it 'Struct is assignable to Hash with Enum that matches all keys' do
+        expect(struct_t({'x' => integer_t, 'y' => integer_t})).to be_assignable_to(hash_t(enum_t('x', 'y', 'z'), factory.any))
+      end
+
+      it 'Struct is not assignable to Hash with Pattern unless all keys match' do
+        expect(struct_t({'a' => integer_t, 'A' => integer_t})).not_to be_assignable_to(hash_t(pattern_t(/^[A-Z]+$/), factory.any))
+      end
+
+      it 'Struct is not assignable to Hash with Enum unless all keys match' do
+        expect(struct_t({'a' => integer_t, 'y' => integer_t})).not_to be_assignable_to(hash_t(enum_t('x', 'y', 'z'), factory.any))
+      end
     end
 
     context "for Tuple, such that" do
@@ -739,7 +803,7 @@ describe 'The type calculator' do
         Bignum     => Puppet::Pops::Types::PIntegerType.new,
         Float      => Puppet::Pops::Types::PFloatType.new,
         Numeric    => Puppet::Pops::Types::PNumericType.new,
-        NilClass   => Puppet::Pops::Types::PNilType.new,
+        NilClass   => Puppet::Pops::Types::PUndefType.new,
         TrueClass  => Puppet::Pops::Types::PBooleanType.new,
         FalseClass => Puppet::Pops::Types::PBooleanType.new,
         String     => Puppet::Pops::Types::PStringType.new,
@@ -1025,6 +1089,30 @@ describe 'The type calculator' do
         expect(calculator.assignable?(struct2, struct1)).to eq(true)
       end
 
+      it 'should accept matching structs with less elements when unmatched elements are optional' do
+        struct1 = struct_t({'a'=>Integer, 'b'=>Integer, 'c'=>optional_t(Integer)})
+        struct2 = struct_t({'a'=>Integer, 'b'=>Integer})
+        expect(calculator.assignable?(struct1, struct2)).to eq(true)
+      end
+
+      it 'should reject matching structs with more elements even if excess elements are optional' do
+        struct1 = struct_t({'a'=>Integer, 'b'=>Integer})
+        struct2 = struct_t({'a'=>Integer, 'b'=>Integer, 'c'=>optional_t(Integer)})
+        expect(calculator.assignable?(struct1, struct2)).to eq(false)
+      end
+
+      it 'should accept matching structs where one is more general than the other with respect to optional' do
+        struct1 = struct_t({'a'=>Integer, 'b'=>Integer, 'c'=>optional_t(Integer)})
+        struct2 = struct_t({'a'=>Integer, 'b'=>Integer, 'c'=>Integer})
+        expect(calculator.assignable?(struct1, struct2)).to eq(true)
+      end
+
+      it 'should reject matching structs where one is more special than the other with respect to optional' do
+        struct1 = struct_t({'a'=>Integer, 'b'=>Integer, 'c'=>Integer})
+        struct2 = struct_t({'a'=>Integer, 'b'=>Integer, 'c'=>optional_t(Integer)})
+        expect(calculator.assignable?(struct1, struct2)).to eq(false)
+      end
+
       it 'should accept matching structs where one is more general than the other' do
         struct1 = struct_t({'a'=>Integer, 'b'=>Integer})
         struct2 = struct_t({'a'=>Numeric, 'b'=>Numeric})
@@ -1040,6 +1128,13 @@ describe 'The type calculator' do
         factory.constrain_size(hsh, 2, 2)
         expect(calculator.assignable?(struct1, hsh)).to eq(true)
         expect(calculator.assignable?(hsh, struct1)).to eq(true)
+      end
+
+      it 'should accept empty hash with key_type undef' do
+        struct1 = struct_t({'a'=>optional_t(Integer)})
+        hsh = hash_t(undef_t, undef_t)
+        factory.constrain_size(hsh, 0, 0)
+        expect(calculator.assignable?(struct1, hsh)).to eq(true)
       end
     end
 
@@ -1117,7 +1212,7 @@ describe 'The type calculator' do
     include_context "types_setup"
 
     it 'should consider undef to be instance of Any, NilType, and optional' do
-      expect(calculator.instance?(Puppet::Pops::Types::PNilType.new(), nil)).to    eq(true)
+      expect(calculator.instance?(Puppet::Pops::Types::PUndefType.new(), nil)).to    eq(true)
       expect(calculator.instance?(Puppet::Pops::Types::PAnyType.new(), nil)).to eq(true)
       expect(calculator.instance?(Puppet::Pops::Types::POptionalType.new(), nil)).to eq(true)
     end
@@ -1139,7 +1234,7 @@ describe 'The type calculator' do
     it 'should not consider undef to be an instance of any other type than Any, NilType and Data' do
       types_to_test = all_types - [
         Puppet::Pops::Types::PAnyType,
-        Puppet::Pops::Types::PNilType,
+        Puppet::Pops::Types::PUndefType,
         Puppet::Pops::Types::PDataType,
         Puppet::Pops::Types::POptionalType,
         ]
@@ -1252,12 +1347,39 @@ describe 'The type calculator' do
       expect(calculator.instance?(tuple, [1, 'a', 1])).to          eq(false)
     end
 
-    it 'should consider hash[cont] as instance of Struct[cont-t]' do
-      struct = struct_t({'a'=>Integer, 'b'=>String, 'c'=>Float})
-      expect(calculator.instance?(struct, {'a'=>1, 'b'=>'a', 'c'=>3.14})).to       eq(true)
-      expect(calculator.instance?(struct, {'a'=>1.2, 'b'=>'a', 'c'=>3.14})).to     eq(false)
-      expect(calculator.instance?(struct, {'a'=>1, 'b'=>1, 'c'=>3.14})).to         eq(false)
-      expect(calculator.instance?(struct, {'a'=>1, 'b'=>'a', 'c'=>1})).to          eq(false)
+    context 'and t is Struct' do
+      it 'should consider hash[cont] as instance of Struct[cont-t]' do
+        struct = struct_t({'a'=>Integer, 'b'=>String, 'c'=>Float})
+        expect(calculator.instance?(struct, {'a'=>1, 'b'=>'a', 'c'=>3.14})).to       eq(true)
+        expect(calculator.instance?(struct, {'a'=>1.2, 'b'=>'a', 'c'=>3.14})).to     eq(false)
+        expect(calculator.instance?(struct, {'a'=>1, 'b'=>1, 'c'=>3.14})).to         eq(false)
+        expect(calculator.instance?(struct, {'a'=>1, 'b'=>'a', 'c'=>1})).to          eq(false)
+      end
+
+      it 'should consider empty hash as instance of Struct[x=>Optional[String]]' do
+        struct = struct_t({'a'=>optional_t(String)})
+        expect(calculator.instance?(struct, {})).to eq(true)
+      end
+
+      it 'should consider hash[cont] as instance of Struct[cont-t,optionals]' do
+        struct = struct_t({'a'=>Integer, 'b'=>String, 'c'=>optional_t(Float)})
+        expect(calculator.instance?(struct, {'a'=>1, 'b'=>'a'})).to eq(true)
+      end
+
+      it 'should consider hash[cont] as instance of Struct[cont-t,variants with optionals]' do
+        struct = struct_t({'a'=>Integer, 'b'=>String, 'c'=>variant_t(String, optional_t(Float))})
+        expect(calculator.instance?(struct, {'a'=>1, 'b'=>'a'})).to eq(true)
+      end
+
+      it 'should not consider hash[cont,cont2] as instance of Struct[cont-t]' do
+        struct = struct_t({'a'=>Integer, 'b'=>String})
+        expect(calculator.instance?(struct, {'a'=>1, 'b'=>'a', 'c'=>'x'})).to eq(false)
+      end
+
+      it 'should not consider hash[cont,cont2] as instance of Struct[cont-t,optional[cont3-t]' do
+        struct = struct_t({'a'=>Integer, 'b'=>String, 'c'=>optional_t(Float)})
+        expect(calculator.instance?(struct, {'a'=>1, 'b'=>'a', 'c'=>'x'})).to eq(false)
+      end
     end
 
     context 'and t is Data' do
@@ -1343,8 +1465,8 @@ describe 'The type calculator' do
       end
     end
 
-    it 'should yield \'PNilType\' for NilClass' do
-      expect(calculator.type(NilClass).class).to eq(Puppet::Pops::Types::PNilType)
+    it 'should yield \'PUndefType\' for NilClass' do
+      expect(calculator.type(NilClass).class).to eq(Puppet::Pops::Types::PUndefType)
     end
 
     it 'should yield \'PStringType\' for String' do
@@ -1605,7 +1727,7 @@ describe 'The type calculator' do
   context 'when processing meta type' do
     it 'should infer PType as the type of all other types' do
       ptype = Puppet::Pops::Types::PType
-      expect(calculator.infer(Puppet::Pops::Types::PNilType.new()       ).is_a?(ptype)).to eq(true)
+      expect(calculator.infer(Puppet::Pops::Types::PUndefType.new()       ).is_a?(ptype)).to eq(true)
       expect(calculator.infer(Puppet::Pops::Types::PDataType.new()      ).is_a?(ptype)).to eq(true)
       expect(calculator.infer(Puppet::Pops::Types::PScalarType.new()   ).is_a?(ptype)).to eq(true)
       expect(calculator.infer(Puppet::Pops::Types::PStringType.new()    ).is_a?(ptype)).to eq(true)
@@ -1630,7 +1752,7 @@ describe 'The type calculator' do
 
     it 'should infer PType as the type of all other types' do
       ptype = Puppet::Pops::Types::PType
-      expect(calculator.string(calculator.infer(Puppet::Pops::Types::PNilType.new()       ))).to eq("Type[Undef]")
+      expect(calculator.string(calculator.infer(Puppet::Pops::Types::PUndefType.new()       ))).to eq("Type[Undef]")
       expect(calculator.string(calculator.infer(Puppet::Pops::Types::PDataType.new()      ))).to eq("Type[Data]")
       expect(calculator.string(calculator.infer(Puppet::Pops::Types::PScalarType.new()   ))).to eq("Type[Scalar]")
       expect(calculator.string(calculator.infer(Puppet::Pops::Types::PStringType.new()    ))).to eq("Type[String]")
@@ -1773,7 +1895,7 @@ describe 'The type calculator' do
       expect(inferred_type.class).to eq(Puppet::Pops::Types::PTupleType)
       element_types = inferred_type.types
       expect(element_types[0].class).to eq(Puppet::Pops::Types::PStringType)
-      expect(element_types[1].class).to eq(Puppet::Pops::Types::PNilType)
+      expect(element_types[1].class).to eq(Puppet::Pops::Types::PUndefType)
     end
   end
 

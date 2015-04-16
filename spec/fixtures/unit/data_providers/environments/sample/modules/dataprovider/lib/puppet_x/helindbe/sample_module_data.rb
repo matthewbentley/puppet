@@ -1,7 +1,7 @@
 # The module is named after the author, to ensure that names under PuppetX namespace
 # does not clash.
 #
-require 'puppetx'
+require 'puppet_x'
 module PuppetX::Helindbe
 
   # A module data provider that is hardcoded and provides data for
@@ -24,7 +24,7 @@ module PuppetX::Helindbe
       }
     end
 
-    def lookup(name, scope)
+    def lookup(name, scope, merge)
       @data[name]
     end
   end

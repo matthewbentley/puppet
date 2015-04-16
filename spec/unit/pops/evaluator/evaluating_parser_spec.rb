@@ -411,7 +411,6 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
         "'0888' + '010'"   => :error,
         "'0xWTF' + '010'"  => :error,
         "'0x12.3' + '010'" => :error,
-        "'0x12.3' + '010'" => :error,
         '"-\n 2" + "2"'    => :error,
         '"-\v 2" + "2"'    => :error,
         '"-2\n" + "2"'     => :error,
@@ -457,6 +456,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "unless false {5}"                => 5,
       "unless true {5}"                 => nil,
       "unless true {2} else {5}"        => 5,
+      "unless true {} else {5}"         => 5,
       "$a = if true {5} $a"                     => 5,
       "$a = if false {5} $a"                    => nil,
       "$a = if false {2} else {5} $a"           => 5,
@@ -492,7 +492,25 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
          Type[Integer] : { yes } }"                          => 'yes',
       # supports unfold
       "case ringo {
-         *[paul, john, ringo, george] : { 'beatle' } }"       => 'beatle',
+         *[paul, john, ringo, george] : { 'beatle' } }"      => 'beatle',
+
+      "case undef {
+         undef : { 'yes' } }"                                => 'yes',
+
+      "case undef {
+         *undef : { 'no' }
+         default :{ 'yes' }}"                                => 'yes',
+
+      "case [green, 2, whatever] {
+         [/ee/, Integer[0,10], default] : { 'yes' }
+         default :{ 'no' }}"                                => 'yes',
+
+      "case {a=>1, b=>2, whatever=>3, extra => ignored} {
+         { a => Integer[0,5],
+           b => Integer[0,5],
+           whatever => default
+         }       : { 'yes' }
+         default : { 'no' }}"                               => 'yes',
 
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
@@ -510,6 +528,21 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       "'banana' ? { /.*(ana).*/  => $1 }"                 => 'ana',
       "[2] ? { Array[String] => yes, Array => yes}"       => 'yes',
       "ringo ? *[paul, john, ringo, george] => 'beatle'"  => 'beatle',
+      "undef ? undef => 'yes'"                            => 'yes',
+      "undef ? {*undef => 'no', default => 'yes'}"        => 'yes',
+
+      "[green, 2, whatever] ? {
+         [/ee/, Integer[0,10], default
+         ]       => 'yes',
+         default => 'no'}"                                => 'yes',
+
+      "{a=>1, b=>2, whatever=>3, extra => ignored} ?
+         {{ a => Integer[0,5],
+           b => Integer[0,5],
+           whatever => default
+         }       => 'yes',
+         default => 'no' }"                               => 'yes',
+
     }.each do |source, result|
         it "should parse and evaluate the expression '#{source}' to #{result}" do
           expect(parser.evaluate_string(scope, source, __FILE__)).to eq(result)
@@ -906,8 +939,8 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
           param 'Integer', :count
           required_block_param
         end
-        def test(count, block)
-          block.call(*[].fill(10, 0, count))
+        def test(count)
+          yield(*[].fill(10, 0, count))
         end
       end
       the_func = fc.new({}, env_loader)
@@ -923,8 +956,8 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
           param 'Any', :lambda_arg
           required_block_param
         end
-        def test(lambda_arg, block)
-          block.call(lambda_arg)
+        def test(lambda_arg)
+          yield(lambda_arg)
         end
       end
       the_func = fc.new({}, env_loader)
@@ -1036,6 +1069,26 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
       expect(parser.evaluate_string(scope, source, __FILE__)).to eql('10')
     end
 
+    it 'should accept a numeric variable expressed as $n' do
+      source = '$x = "abc123def" =~ /(abc)(123)(def)/; "${$2}"'
+      expect(parser.evaluate_string(scope, source, __FILE__)).to eql('123')
+    end
+
+    it 'should accept a numeric variable expressed as just an integer' do
+      source = '$x = "abc123def" =~ /(abc)(123)(def)/; "${2}"'
+      expect(parser.evaluate_string(scope, source, __FILE__)).to eql('123')
+    end
+
+    it 'should accept a numeric variable expressed as $n in an access operation' do
+      source = '$x = "abc123def" =~ /(abc)(123)(def)/; "${$0[4,3]}"'
+      expect(parser.evaluate_string(scope, source, __FILE__)).to eql('23d')
+    end
+
+    it 'should accept a numeric variable expressed as just an integer in an access operation' do
+      source = '$x = "abc123def" =~ /(abc)(123)(def)/; "${0[4,3]}"'
+      expect(parser.evaluate_string(scope, source, __FILE__)).to eql('23d')
+    end
+
     {
       '"value is ${a*2} yo"'  => :error,
     }.each do |source, result|
@@ -1057,7 +1110,7 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     end
 
     it "a lex error should be raised for '$foo::::bar'" do
-      expect { parser.evaluate_string(scope, "$foo::::bar") }.to raise_error(Puppet::LexError, /Illegal fully qualified name at line 1:7/)
+      expect { parser.evaluate_string(scope, "$foo::::bar") }.to raise_error(Puppet::ParseErrorWithIssue, /Illegal fully qualified name at line 1:7/)
     end
 
     { '$a = $0'   => nil,
@@ -1224,14 +1277,14 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     end
 
     it 'for non r-value producing define' do
-      Puppet.expects(:err).with("Invalid use of expression. A 'define' expression does not produce a value at line 1:6")
-      Puppet.expects(:err).with("Classes, definitions, and nodes may only appear at toplevel or inside other classes at line 1:6")
+      Puppet::Util::Log.expects(:create).with(has_entries(:level => :err, :message => "Invalid use of expression. A 'define' expression does not produce a value", :line => 1, :pos => 6))
+      Puppet::Util::Log.expects(:create).with(has_entries(:level => :err, :message => 'Classes, definitions, and nodes may only appear at toplevel or inside other classes', :line => 1, :pos => 6))
       expect { parser.parse_string("$a = define foo { }", nil) }.to raise_error(/2 errors/)
     end
 
     it 'for non r-value producing class' do
-      Puppet.expects(:err).with("Invalid use of expression. A Host Class Definition does not produce a value at line 1:6")
-      Puppet.expects(:err).with("Classes, definitions, and nodes may only appear at toplevel or inside other classes at line 1:6")
+      Puppet::Util::Log.expects(:create).with(has_entries(:level => :err, :message => 'Invalid use of expression. A Host Class Definition does not produce a value', :line => 1, :pos => 6))
+      Puppet::Util::Log.expects(:create).with(has_entries(:level => :err, :message => 'Classes, definitions, and nodes may only appear at toplevel or inside other classes', :line => 1, :pos => 6))
       expect { parser.parse_string("$a = class foo { }", nil) }.to raise_error(/2 errors/)
     end
 
@@ -1245,8 +1298,8 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl' do
     end
 
     it 'for multiple errors with a summary exception' do
-      Puppet.expects(:err).with("Invalid use of expression. A Node Definition does not produce a value at line 1:6")
-      Puppet.expects(:err).with("Classes, definitions, and nodes may only appear at toplevel or inside other classes at line 1:6")
+      Puppet::Util::Log.expects(:create).with(has_entries(:level => :err, :message => 'Invalid use of expression. A Node Definition does not produce a value', :line => 1, :pos => 6))
+      Puppet::Util::Log.expects(:create).with(has_entries(:level => :err, :message => 'Classes, definitions, and nodes may only appear at toplevel or inside other classes', :line => 1, :pos => 6))
       expect { parser.parse_string("$a = node x { }",nil) }.to raise_error(/2 errors/)
     end
 
