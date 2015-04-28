@@ -65,7 +65,7 @@ class Puppet::Application::Agent < Puppet::Application
   end
 
   option("--report-terminus TERMINUS") do |arg|
-    optios[:report_terminus] = ['false', 'nil', false, nil].include?(arg) ? nil : arg.to_sym
+    options[:report_terminus] = ['false', 'nil', false, nil].include?(arg) ? nil : arg.to_sym
   end
 
   option("--report-cache-terminus") do |arg|
