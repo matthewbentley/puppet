@@ -36,9 +36,7 @@ class Puppet::Application::Agent < Puppet::Application
       :serve => [],
       :digest => 'SHA256',
       :graph => true,
-      :fingerprint => false,
-      :report_terminus => :rest,
-      :report_cache_terminus => :yaml
+      :fingerprint => false
     }.each do |opt,val|
       options[opt] = val
     end
@@ -65,11 +63,11 @@ class Puppet::Application::Agent < Puppet::Application
   end
 
   option("--report-terminus TERMINUS") do |arg|
-    options[:report_terminus] = ['false', 'nil', false, nil].include?(arg) ? nil : arg.to_sym
+    options[:report_terminus] = arg
   end
 
   option("--report-cache-terminus") do |arg|
-    options[:report_cache_terminus] = ['false', 'nil', false, nil].include?(arg) ? nil : arg.to_sym
+    options[:report_cache_terminus] = arg
   end
 
   option("--detailed-exitcodes") do |arg|
@@ -427,9 +425,14 @@ Copyright (c) 2011 Puppet Labs, LLC Licensed under the Apache 2.0 License
     # but this is just a temporary band-aid.
     Puppet[:ignoreimport] = true
 
-    Puppet::Transaction::Report.indirection.terminus_class = options[:report_terminus]
+    report_terminus = options[:report_terminus] || Puppet[:report_terminus]
+    Puppet::Transaction::Report.indirection.terminus_class =
+      ['false', 'nil', false, nil].include?(report_terminus) ? nil : report_terminus.to_sym
+
     # we want the last report to be persisted locally
-    Puppet::Transaction::Report.indirection.cache_class = options[:report_cache_terminus]
+    report_cache_terminus = options[:report_cache_terminus] || Puppet[:report_cache_terminus]
+    Puppet::Transaction::Report.indirection.cache_class =
+      ['false', 'nil', false, nil].include?(report_cache_terminus) ? nil : report_cache_terminus.to_sym
 
     if Puppet[:catalog_cache_terminus]
       Puppet::Resource::Catalog.indirection.cache_class = Puppet[:catalog_cache_terminus]
