@@ -453,7 +453,7 @@ module Puppet::Environments
     end
 
     class FileMtimeEntry < Entry
-      def initialize(env, path)
+      def initialize(value, path)
         super value
         @mtime   = Time.now
         @evicted = false
