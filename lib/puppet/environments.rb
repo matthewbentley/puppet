@@ -397,7 +397,8 @@ module Puppet::Environments
       ttl = (conf = get_conf(env.name)) ? conf.environment_timeout : Puppet.settings.value(:environment_timeout)
       case ttl
       when 0
-        NotCachedEntry.new(env)     # Entry that is always expired (avoids syscall to get time)
+        # Expire when mtime on environment.conf changes
+        FileMtimeEntry.new(env, File.join(Puppet.settings.value(:environmentpath), env.name.to_s, "environment.conf"))
       when INFINITY
         Entry.new(env)              # Entry that never expires (avoids syscall to get time)
       else
@@ -409,7 +410,7 @@ module Puppet::Environments
     # Also clears caches in Settings that may prevent the entry from being updated
     def evict_if_expired(name)
       if (result = @cache[name]) && (result.expired? || @cache_expiration_service.expired?(name))
-        @cache.delete(name)
+        @cache.delete(name).evict!
         @cache_expiration_service.evicted(name)
 
         Puppet.settings.clear_environment_settings(name)
@@ -426,6 +427,9 @@ module Puppet::Environments
 
       def expired?
         false
+      end
+
+      def evict!
       end
     end
 
@@ -445,6 +449,28 @@ module Puppet::Environments
 
       def expired?
         Time.now > @ttl
+      end
+    end
+
+    class FileMtimeEntry < Entry
+      def initialize(env, path)
+        super value
+        @mtime   = Time.now
+        @evicted = false
+        @thread  = Thread.new do
+          loop do
+            @evicted = File.mtime(path) > @mtime rescue true
+            sleep 10
+          end
+        end
+      end
+
+      def evicted?
+        @evicted
+      end
+
+      def evict!
+        @thread.exit
       end
     end
   end
