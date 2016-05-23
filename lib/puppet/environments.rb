@@ -413,6 +413,7 @@ module Puppet::Environments
     def evict_if_expired(name)
       if (result = @cache[name]) && (result.expired? || @cache_expiration_service.expired?(name))
         @cache.delete(name)
+        @cache_conf.delete(name)
         @cache_expiration_service.evicted(name)
 
         Puppet.settings.clear_environment_settings(name)
