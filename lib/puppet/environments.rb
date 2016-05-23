@@ -342,6 +342,7 @@ module Puppet::Environments
       @loader = loader
       @cache = {}
       @cache_expiration_service = Puppet::Environments::Cached.cache_expiration_service
+      @cache_conf = {}
     end
 
     # @!macro loader_list
@@ -369,12 +370,14 @@ module Puppet::Environments
     # (The intention is that this could be used from a MANUAL cache eviction command (TBD)
     def clear(name)
       @cache.delete(name)
+      @cache_conf.delete(name)
     end
 
     # Clears all cached environments.
     # (The intention is that this could be used from a MANUAL cache eviction command (TBD)
     def clear_all()
       @cache = {}
+      @cache_conf = {}
     end
 
     # This implementation evicts the cache, and always gets the current
@@ -387,7 +390,7 @@ module Puppet::Environments
     # @!macro loader_get_conf
     def get_conf(name)
       evict_if_expired(name)
-      @loader.get_conf(name)
+      @cache_conf.fetch(name) { @cache_conf[name] = @loader.get_conf(name) }
     end
 
     # Creates a suitable cache entry given the time to live for one environment
